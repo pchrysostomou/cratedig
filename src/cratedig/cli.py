@@ -1,14 +1,31 @@
 # cratedig — Copyright (C) 2026 Prodromos Chrysostomou
 # Licensed under the GNU General Public License v3.0 or later. See LICENSE.
-"""Command-line interface for cratedig (Typer app).
+"""Command-line interface for cratedig (Typer + Rich). See DESIGN.md §6.
 
-Phase 0 scaffold: exposes ``--version`` and a placeholder ``download`` command so
-that ``crate --help`` works. The real pipeline is wired up in later phases.
+Note: this module deliberately does NOT use ``from __future__ import annotations``
+so Typer introspects the real option types at runtime.
 """
 
+from pathlib import Path
+from typing import Annotated
+
 import typer
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from yt_dlp import YoutubeDL
 
 from cratedig import __version__
+from cratedig.config import get_settings
+from cratedig.core.orchestrator import Orchestrator
+from cratedig.download.matcher import find_best_match
+from cratedig.download.youtube_downloader import YouTubeDownloader
+from cratedig.exceptions import ConfigError, InvalidUrlError, SpotifyApiError
+from cratedig.logging_setup import setup_logging
+from cratedig.lyrics.lyrics_fetcher import fetch_lyrics
+from cratedig.models import DownloadResult, ResultStatus
+from cratedig.providers.spotify_handler import SpotifyHandler
+from cratedig.tagging.tagger import Tagger
 
 app = typer.Typer(
     name="crate",
@@ -16,6 +33,14 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
 )
+console = Console()
+
+_STATUS_GLYPH = {
+    ResultStatus.SUCCESS: "[green]✓[/green]",
+    ResultStatus.SKIPPED: "[yellow]⤼[/yellow]",
+    ResultStatus.NOT_FOUND: "[red]✗[/red]",
+    ResultStatus.FAILED: "[red]✗[/red]",
+}
 
 
 def _version_callback(value: bool) -> None:
@@ -26,21 +51,96 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
-    version: bool = typer.Option(
-        False,
-        "--version",
-        "-V",
-        help="Show the cratedig version and exit.",
-        is_eager=True,
-        callback=_version_callback,
-    ),
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            "-V",
+            help="Show the cratedig version and exit.",
+            is_eager=True,
+            callback=_version_callback,
+        ),
+    ] = False,
 ) -> None:
     """cratedig — download audio for Spotify tracks, albums, and playlists."""
 
 
 @app.command()
 def download(
-    url: str = typer.Argument(..., help="Spotify track / album / playlist URL or URI."),
+    url: Annotated[str, typer.Argument(help="Spotify track / album / playlist URL or URI.")],
+    audio_format: Annotated[
+        str | None, typer.Option("--format", help="Audio format (default: mp3).")
+    ] = None,
+    bitrate: Annotated[
+        str | None, typer.Option("--bitrate", help="Audio bitrate in kbps (default: 192).")
+    ] = None,
+    output: Annotated[
+        Path | None, typer.Option("--output", help="Output directory (default: ~/Music/cratedig).")
+    ] = None,
+    workers: Annotated[
+        int | None, typer.Option("--workers", help="Download workers (default: 3).")
+    ] = None,
+    cookies_from_browser: Annotated[
+        str | None,
+        typer.Option(
+            "--cookies-from-browser", help="Browser to read YouTube cookies from (anti-bot)."
+        ),
+    ] = None,
+    no_lyrics: Annotated[bool, typer.Option("--no-lyrics", help="Skip lyrics fetching.")] = False,
+    verbose: Annotated[
+        bool, typer.Option("--verbose", help="Enable verbose (INFO) logging.")
+    ] = False,
 ) -> None:
-    """Download audio for a Spotify URL (not implemented yet)."""
-    typer.echo("not implemented yet")
+    """Download audio for a Spotify track, album, or playlist URL."""
+    setup_logging(verbose)
+    try:
+        settings = get_settings(
+            output_dir=output,
+            audio_format=audio_format,
+            bitrate=bitrate,
+            max_workers=workers,
+            cookies_from_browser=cookies_from_browser,
+        )
+        orchestrator = Orchestrator(
+            handler=SpotifyHandler(settings.spotify_client_id, settings.spotify_client_secret),
+            downloader=YouTubeDownloader(
+                settings.output_dir,
+                audio_format=settings.audio_format,
+                bitrate=settings.bitrate,
+                cookies_from_browser=settings.cookies_from_browser,
+            ),
+            matcher=find_best_match,
+            lyrics_fetcher=None if no_lyrics else fetch_lyrics,
+            tagger=Tagger(),
+            ydl=YoutubeDL({"quiet": True, "no_warnings": True}),
+            max_workers=settings.max_workers,
+        )
+        with console.status("[bold]Fetching metadata and downloading…"):
+            results = orchestrator.run(url)
+    except (ConfigError, InvalidUrlError, SpotifyApiError) as exc:
+        console.print(Panel(str(exc), title="cratedig error", border_style="red"))
+        raise typer.Exit(code=1) from exc
+
+    _print_summary(results)
+
+
+def _print_summary(results: list[DownloadResult]) -> None:
+    table = Table(title="cratedig results")
+    table.add_column("Track", overflow="fold")
+    table.add_column("Status", justify="center")
+    table.add_column("Lyrics", justify="center")
+    for result in results:
+        glyph = _STATUS_GLYPH.get(result.status, "?")
+        lyrics = "[green]✓[/green]" if result.lyrics_found else "[dim]✗[/dim]"
+        table.add_row(result.track.search_query, glyph, lyrics)
+    console.print(table)
+
+    counts = {status: 0 for status in ResultStatus}
+    for result in results:
+        counts[result.status] += 1
+    console.print(
+        f"{counts[ResultStatus.SUCCESS]} downloaded, "
+        f"{counts[ResultStatus.SKIPPED]} skipped, "
+        f"{counts[ResultStatus.NOT_FOUND]} not found, "
+        f"{counts[ResultStatus.FAILED]} failed"
+    )
