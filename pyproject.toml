@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cratedig"
+version = "0.1.0"
+description = "Spotify-to-Audio CLI: fetch metadata, find matching audio on YouTube, transcode to MP3, and embed ID3 tags + cover art + lyrics."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Prodromos Chrysostomou" },
+]
+keywords = ["spotify", "youtube", "music", "download", "cli", "lyrics", "id3"]
+# NOTE: No "License ::" trove classifier is listed. Under PEP 639, setuptools >=77
+# rejects combining a SPDX license expression (above) with a license classifier.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Natural Language :: English",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = [
+    "spotipy>=2.24",
+    "yt-dlp>=2024.0",
+    "mutagen>=1.47",
+    "typer>=0.12",
+    "rich>=13.7",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+    "rapidfuzz>=3.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-mock",
+    "responses",
+    "ruff",
+    "pyinstaller",
+]
+
+[project.scripts]
+crate = "cratedig.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]

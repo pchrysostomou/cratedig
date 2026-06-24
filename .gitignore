@@ -1,0 +1,50 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+dist/
+wheels/
+*.egg-info/
+*.egg
+.eggs/
+
+# Downloaded audio (default output dir)
+downloads/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / coverage / type-check caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.cache/
+
+# Secrets & local config — never commit real credentials
+.env
+*.env
+!.env.example
+
+# Claude Code local working notes / harness settings (not shared)
+CLAUDE.local.md
+.claude/
+
+# PyInstaller
+*.spec
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
