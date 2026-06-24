@@ -22,7 +22,7 @@ class Track:
     disc_number: int
     release_year: str | None
     cover_art_url: str | None
-    spotify_id: str
+    source_id: str
     lyrics: str | None = None  # enriched post-fetch via dataclasses.replace()
 
     @property

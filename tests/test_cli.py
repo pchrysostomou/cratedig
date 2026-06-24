@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 from cratedig import __version__, cli
 from cratedig.cli import app
 from cratedig.config import Settings
-from cratedig.exceptions import ConfigError, InvalidUrlError, SpotifyApiError
+from cratedig.exceptions import ConfigError, InvalidUrlError, ProviderApiError
 from cratedig.models import DownloadResult, ResultStatus, Track
 
 runner = CliRunner()
@@ -25,7 +25,7 @@ def _track(title, artist="Artist"):
         disc_number=1,
         release_year=None,
         cover_art_url=None,
-        spotify_id="sid",
+        source_id="sid",
     )
 
 
@@ -93,7 +93,7 @@ def test_invalid_url_clean_exit(wired):
 
 
 def test_spotify_api_error_clean_exit(wired):
-    wired.return_value.run.side_effect = SpotifyApiError("api down")
+    wired.return_value.run.side_effect = ProviderApiError("api down")
     result = runner.invoke(app, ["download", "spotify:track:x"])
     assert result.exit_code == 1
     assert "Traceback" not in result.output

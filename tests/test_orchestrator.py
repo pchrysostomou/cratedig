@@ -8,7 +8,7 @@ import pytest
 
 from cratedig.core.orchestrator import Orchestrator
 from cratedig.download.youtube_downloader import _output_ext, _safe_filename
-from cratedig.exceptions import DownloadError, SpotifyApiError, TaggingError
+from cratedig.exceptions import DownloadError, ProviderApiError, TaggingError
 from cratedig.models import ResultStatus, Track
 
 
@@ -23,7 +23,7 @@ def _track(title="Song", artists=("Artist A",)):
         disc_number=1,
         release_year=None,
         cover_art_url=None,
-        spotify_id="sid",
+        source_id="sid",
     )
 
 
@@ -69,7 +69,7 @@ class _FakeTagger:
 
 
 def _match_ok(track, ydl):
-    return f"https://www.youtube.com/watch?v={track.spotify_id}"
+    return f"https://www.youtube.com/watch?v={track.source_id}"
 
 
 def _match_none(track, ydl):
@@ -238,8 +238,8 @@ def test_per_track_isolation(tmp_path):
 
 
 def test_fetch_level_error_propagates(tmp_path):
-    orch = _orch(_FakeHandler(error=SpotifyApiError("api down")), _FakeDownloader(tmp_path))
-    with pytest.raises(SpotifyApiError):
+    orch = _orch(_FakeHandler(error=ProviderApiError("api down")), _FakeDownloader(tmp_path))
+    with pytest.raises(ProviderApiError):
         orch.run("u")
 
 
@@ -270,7 +270,7 @@ def test_lyrics_callable_raising_is_soft(tmp_path):
     "track",
     [
         _track(title="Sōng: Test? / Mix", artists=("AC/DC",)),  # unicode + illegal chars
-        _track(title="???", artists=("///",)),  # all-illegal -> spotify_id fallback
+        _track(title="???", artists=("///",)),  # all-illegal -> source_id fallback
         _track(title="a.mp3", artists=("b",)),  # dotted base (Path.with_suffix trap)
         _track(title="X" * 250, artists=("Y",)),  # length cap
     ],

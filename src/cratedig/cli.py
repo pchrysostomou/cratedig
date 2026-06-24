@@ -20,7 +20,7 @@ from cratedig.config import get_settings
 from cratedig.core.orchestrator import Orchestrator
 from cratedig.download.matcher import find_best_match
 from cratedig.download.youtube_downloader import YouTubeDownloader
-from cratedig.exceptions import ConfigError, InvalidUrlError, SpotifyApiError
+from cratedig.exceptions import ConfigError, InvalidUrlError, ProviderApiError
 from cratedig.logging_setup import setup_logging
 from cratedig.lyrics.lyrics_fetcher import fetch_lyrics
 from cratedig.models import DownloadResult, ResultStatus
@@ -117,7 +117,7 @@ def download(
         )
         with console.status("[bold]Fetching metadata and downloading…"):
             results = orchestrator.run(url)
-    except (ConfigError, InvalidUrlError, SpotifyApiError) as exc:
+    except (ConfigError, InvalidUrlError, ProviderApiError) as exc:
         console.print(Panel(str(exc), title="cratedig error", border_style="red"))
         raise typer.Exit(code=1) from exc
 

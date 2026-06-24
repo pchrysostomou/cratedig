@@ -35,7 +35,7 @@ def _track(**over):
         "disc_number": 1,
         "release_year": "2011",
         "cover_art_url": None,
-        "spotify_id": "sid",
+        "source_id": "sid",
         "lyrics": None,
     }
     base.update(over)

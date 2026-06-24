@@ -19,7 +19,7 @@ def _make_track(**overrides: object) -> Track:
         disc_number=1,
         release_year="2011",
         cover_art_url="https://example.com/cover.jpg",
-        spotify_id="3Df354tabcDEF1234567",
+        source_id="3Df354tabcDEF1234567",
     )
     base.update(overrides)
     return Track(**base)  # type: ignore[arg-type]

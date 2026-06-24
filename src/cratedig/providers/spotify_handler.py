@@ -15,7 +15,7 @@ import requests
 from spotipy import Spotify, SpotifyException
 from spotipy.oauth2 import SpotifyClientCredentials
 
-from cratedig.exceptions import InvalidUrlError, SpotifyApiError
+from cratedig.exceptions import InvalidUrlError, ProviderApiError
 from cratedig.models import Track
 
 # spotify:track:<id> / spotify:album:<id> / spotify:playlist:<id>
@@ -55,15 +55,15 @@ class SpotifyHandler:
 
     def fetch(self, url_or_uri: str) -> list[Track]:
         """Return the tracks for a Spotify track/album/playlist URL or URI."""
-        kind, spotify_id = self._parse_input(url_or_uri)
+        kind, source_id = self._parse_input(url_or_uri)
         try:
             if kind == "track":
-                return self._fetch_track(spotify_id)
+                return self._fetch_track(source_id)
             if kind == "album":
-                return self._fetch_album(spotify_id)
-            return self._fetch_playlist(spotify_id)
+                return self._fetch_album(source_id)
+            return self._fetch_playlist(source_id)
         except (SpotifyException, requests.RequestException) as exc:
-            raise SpotifyApiError(f"Spotify API request failed: {exc}") from exc
+            raise ProviderApiError(f"Spotify API request failed: {exc}") from exc
 
     # -- input parsing ------------------------------------------------------
 
@@ -130,6 +130,6 @@ class SpotifyHandler:
             disc_number=track["disc_number"],
             release_year=release_date[:4] if release_date else None,
             cover_art_url=images[0]["url"] if images else None,
-            spotify_id=track["id"],
+            source_id=track["id"],
             lyrics=None,
         )

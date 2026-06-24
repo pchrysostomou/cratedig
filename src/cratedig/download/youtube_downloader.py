@@ -44,7 +44,7 @@ def _safe_filename(track: Track, ext: str) -> str:
     base = _ILLEGAL_FILENAME_RE.sub(" ", base)
     base = re.sub(r"\s+", " ", base).strip().rstrip(". ")
     if not re.search(r"[A-Za-z0-9]", base):  # nothing usable survived sanitizing
-        base = track.spotify_id or "track"
+        base = track.source_id or "track"
     base = base[:_MAX_BASENAME].strip().rstrip(". ")
     return f"{base}.{ext}"
 

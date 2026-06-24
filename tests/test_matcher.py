@@ -38,7 +38,7 @@ def _track(title="Song", artists=("Artist A",), duration_ms=200_000):
         disc_number=1,
         release_year=None,
         cover_art_url=None,
-        spotify_id="sid",
+        source_id="sid",
     )
 
 

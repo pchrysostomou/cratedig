@@ -49,7 +49,7 @@ class Orchestrator:
         self.max_workers = max_workers  # stored; the thread pool is Phase 6
 
     def run(self, url: str) -> list[DownloadResult]:
-        # Fetch-level failures (InvalidUrlError / SpotifyApiError) are fatal for the
+        # Fetch-level failures (InvalidUrlError / ProviderApiError) are fatal for the
         # whole run: they propagate out so the CLI can show one clean error.
         tracks = self.handler.fetch(url)
         return [self._process(track) for track in tracks]

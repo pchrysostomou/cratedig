@@ -9,7 +9,7 @@ import pytest
 import requests
 from spotipy import SpotifyException
 
-from cratedig.exceptions import InvalidUrlError, SpotifyApiError
+from cratedig.exceptions import InvalidUrlError, ProviderApiError
 from cratedig.models import Track
 from cratedig.providers import spotify_handler as sh_module
 from cratedig.providers.spotify_handler import SpotifyHandler
@@ -123,7 +123,7 @@ def test_fetch_track_maps_all_fields(handler):
     assert t.disc_number == 1
     assert t.release_year == "2011"
     assert t.cover_art_url == "https://img/large.jpg"  # first (largest) image
-    assert t.spotify_id == "track1id000000000000001"
+    assert t.source_id == "track1id000000000000001"
     assert t.lyrics is None
 
 
@@ -159,7 +159,7 @@ def test_fetch_album_paginates_in_order(handler):
     handler._sp.album.assert_called_once_with("albumid00000000000001")
     handler._sp.next.assert_called_once()
     assert [t.title for t in tracks] == ["Intro", "Midnight City", "Wait", "Reunion"]
-    assert [t.spotify_id for t in tracks] == ["alb1", "alb2", "alb3", "alb4"]
+    assert [t.source_id for t in tracks] == ["alb1", "alb2", "alb3", "alb4"]
     # Album name + cover art applied to every track; simplified tracks have no ISRC.
     assert all(t.album == "Hurry Up, We're Dreaming" for t in tracks)
     assert all(t.cover_art_url == "https://img/album.jpg" for t in tracks)
@@ -182,7 +182,7 @@ def test_fetch_playlist_paginates_skips_and_orders(handler):
     assert kwargs["additional_types"] == ("track",)
     # null + id-less entries skipped; order preserved across both pages.
     assert [t.title for t in tracks] == ["Song A", "Song B"]
-    assert [t.spotify_id for t in tracks] == ["plA", "plB"]
+    assert [t.source_id for t in tracks] == ["plA", "plB"]
     a, b = tracks
     assert a.artists == ["Artist A", "Guest"]  # full artist set, ordered
     assert a.isrc == "AAA111111111"
@@ -201,18 +201,18 @@ def test_fetch_playlist_paginates_skips_and_orders(handler):
 def test_spotify_api_error_is_wrapped(handler):
     handler._sp.track.side_effect = SpotifyException(429, -1, "rate limited")
 
-    with pytest.raises(SpotifyApiError):
+    with pytest.raises(ProviderApiError):
         handler.fetch("spotify:track:abc123")
 
 
 def test_requests_error_is_wrapped(handler):
     handler._sp.album.side_effect = requests.RequestException("connection reset")
 
-    with pytest.raises(SpotifyApiError):
+    with pytest.raises(ProviderApiError):
         handler.fetch("spotify:album:abc123")
 
 
 def test_invalid_url_is_not_wrapped(handler):
-    # InvalidUrlError must surface as-is, never converted to SpotifyApiError.
+    # InvalidUrlError must surface as-is, never converted to ProviderApiError.
     with pytest.raises(InvalidUrlError):
         handler.fetch("not-a-spotify-url")

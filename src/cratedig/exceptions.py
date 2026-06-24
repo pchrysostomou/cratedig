@@ -2,9 +2,9 @@
 # Licensed under the GNU General Public License v3.0 or later. See LICENSE.
 """Custom exception hierarchy (see DESIGN.md §7).
 
-Strategy: fail fast on config, fail soft per track. Lyrics never raise into the
-pipeline (failures are swallowed inside ``lyrics_fetcher``), so there is no
-lyrics-specific exception here.
+Strategy: fail fast on config/provider, fail soft per track. Lyrics never raise
+into the pipeline (failures are swallowed inside ``lyrics_fetcher``), so there is
+no lyrics-specific exception here.
 """
 
 
@@ -16,16 +16,16 @@ class ConfigError(CratedigError):
     """Missing/invalid configuration (e.g. Spotify creds). Fatal — exit early."""
 
 
-class SpotifyError(CratedigError):
-    """Base for Spotify-related failures."""
+class ProviderError(CratedigError):
+    """Base for metadata-provider failures."""
 
 
-class InvalidUrlError(SpotifyError):
-    """The supplied URL/URI is not a valid Spotify track/album/playlist."""
+class InvalidUrlError(ProviderError):
+    """The supplied input is not a recognized provider URL / ID."""
 
 
-class SpotifyApiError(SpotifyError):
-    """Spotify API failure (401/429/5xx) — backoff, then fatal."""
+class ProviderApiError(ProviderError):
+    """Metadata-provider API failure (network / 4xx / 5xx) — fatal for the run."""
 
 
 class MatchNotFoundError(CratedigError):
