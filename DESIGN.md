@@ -1,32 +1,34 @@
-# `cratedig` — Spotify-to-Audio CLI · Technical Design & Build Plan
+# `cratedig` — Music-to-Audio CLI · Technical Design & Build Plan
 
 > **Status:** Approved spec, v0.2 (adds lyrics) — *no application code written yet.*
 > **Purpose:** complete architecture spec + phased build roadmap. Reviewed/approved first, then handed to Claude Code one phase at a time.
 > **Working name:** `cratedig` (placeholder — see §14). Command: `crate`. Package: `cratedig`. Swappable everywhere with one find/replace.
 > **Changes since v0.1:** lyrics embedding (LRCLIB), resolved credentials decision (prompt-per-user), YouTube anti-bot/cookies handling, matcher normalization, pipx-first distribution.
+> **Changes since v0.2 (MusicBrainz migration):** metadata source is now **MusicBrainz** (free, keyless) instead of Spotify; input is a MusicBrainz release/recording URL/MBID **or** a free-text search query (no playlists); `Track.source_id` replaces `spotify_id`; exceptions `ProviderError`/`ProviderApiError` replace `SpotifyError`/`SpotifyApiError`; no credentials required.
 
 ---
 
 ## 0. Legal / scope note (read first)
 
-This tool fetches metadata from the Spotify API (legitimate, authenticated), downloads matching audio from YouTube via `yt-dlp`, and fetches lyrics from LRCLIB (a free, open, community-contributed lyrics database — no key, no DRM). The download step sits in a **legal gray area** depending on jurisdiction and the Spotify/YouTube ToS, exactly like the upstream projects this is modeled on (`spotDL`, `yt-dlp`). Build it for content you have the right to use; ship a clear disclaimer in the README.
+This tool fetches metadata from the MusicBrainz API (free, open, keyless), downloads matching audio from YouTube via `yt-dlp`, and fetches lyrics from LRCLIB (a free, open, community-contributed lyrics database — no key, no DRM). The download step sits in a **legal gray area** depending on jurisdiction and the YouTube ToS, exactly like the upstream projects this is modeled on (`spotDL`, `yt-dlp`). Build it for content you have the right to use; ship a clear disclaimer in the README.
 
 ---
 
 ## 1. Goals & non-goals
 
 **Goals**
-- Input a Spotify **track**, **album**, or **playlist** URL/URI.
-- Fetch clean metadata via the Spotify API.
+- Input a **MusicBrainz** release (album) or recording (track) — as a URL or bare MBID — **or** a free-text search query.
+- Fetch clean metadata via the MusicBrainz API (free, keyless).
 - Find the best-matching audio on YouTube and download the highest-quality stream.
 - Transcode to MP3 (or M4A) and embed full ID3 tags + album art + **lyrics**.
 - Run on Windows as (a) a `pipx`/`pip`-installable CLI for devs and (b) a standalone `.exe` for non-developers from GitHub Releases.
 - Download multiple tracks concurrently.
 
 **Non-goals (v1)**
-- No DRM circumvention. We never touch Spotify's protected audio — only its public metadata.
+- No DRM circumvention. We read only public MusicBrainz metadata.
 - No GUI (CLI only).
-- No Apple Music / Deezer sources (later extension point).
+- No playlist input (MusicBrainz has no user playlists); albums (releases) and single tracks (recordings) only.
+- No Apple Music / Deezer / Spotify sources (later extension point).
 - Lyrics are **best-effort enrichment**, never a hard requirement.
 
 ---
@@ -38,14 +40,14 @@ This tool fetches metadata from the Spotify API (legitimate, authenticated), dow
 | Language | Python 3.10+ | `match`, modern typing + packaging. |
 | CLI framework | **Typer** | Type-hint-driven, auto `--help`, composes with Rich. Cleaner than argparse. |
 | Terminal UX | **Rich** | Progress bars, colored logging, error panels. |
-| Spotify metadata | **Spotipy** | OAuth Client-Credentials + token refresh. |
+| Metadata | **MusicBrainz API** (via `requests`) | Free, keyless, open. Self-throttled to ~1 req/s with a descriptive `User-Agent` (MusicBrainz returns HTTP 503 above that). Cover art via the Cover Art Archive. |
 | Search + download | **yt-dlp** | De-facto standard; Python API + search + post-processing. |
 | Lyrics | **LRCLIB** via `requests` | Free, no API key, matches on duration (same philosophy as our YT matcher). We call the HTTP API directly with `requests` rather than a wrapper lib — fewer deps, full control. |
 | Audio tagging | **Mutagen** | ID3v2 (incl. APIC art + USLT lyrics), MP4 atoms. |
 | Audio transcode | **FFmpeg** (external binary) | Required by yt-dlp. **#1 gotcha** — see §10. |
 | Config / models | **Pydantic v2** + `python-dotenv` | Typed config, validated models. |
 | Fuzzy matching | **rapidfuzz** | String similarity for the YT matcher. |
-| Tests | **pytest** + mocks | Mock Spotify / yt-dlp / LRCLIB; no network in tests. |
+| Tests | **pytest** + mocks | Mock MusicBrainz / yt-dlp / LRCLIB; no network in tests. |
 | Packaging | **pyproject.toml** + **PyInstaller** | Console-script for devs; `.exe` for end users. |
 
 No new runtime dependency is needed for lyrics — `requests` is already present (used for cover art).
@@ -80,7 +82,7 @@ cratedig/
 │       │   └── orchestrator.py # pipeline + concurrency
 │       │
 │       ├── providers/
-│       │   └── spotify_handler.py
+│       │   └── musicbrainz_handler.py
 │       │
 │       ├── download/
 │       │   ├── youtube_downloader.py
@@ -94,7 +96,7 @@ cratedig/
 │
 ├── tests/
 │   ├── conftest.py
-│   ├── test_spotify_handler.py
+│   ├── test_musicbrainz_handler.py
 │   ├── test_matcher.py
 │   ├── test_lyrics_fetcher.py   # NEW
 │   ├── test_tagger.py
@@ -110,13 +112,13 @@ cratedig/
 ## 4. Data flow
 
 ```
-CLI input (URL/URI)
+CLI input (search query / MB URL / MBID)
       │
       ▼
-[cli.py]  parse args, load config/secrets
+[cli.py]  parse args, load config
       │
       ▼
-[spotify_handler]  detect type ─► fetch metadata (batched)
+[musicbrainz_handler]  search query OR look up release/recording MBID ─► fetch metadata
       │
       ▼
 List[Track]  (title, artists, album, isrc, duration, cover_art_url, lyrics=None)
@@ -147,7 +149,7 @@ List[Track]  (title, artists, album, isrc, duration, cover_art_url, lyrics=None)
 
 ```mermaid
 flowchart TD
-    A[CLI URL input] --> B[spotify_handler]
+    A[CLI input: search / MB URL / MBID] --> B[musicbrainz_handler]
     B --> C[Track models]
     C --> D[orchestrator / thread pool]
     D --> E[matcher: normalize + score YT]
@@ -179,7 +181,7 @@ class Track:
     disc_number: int
     release_year: str | None
     cover_art_url: str | None
-    spotify_id: str
+    source_id: str               # the source's stable ID (for MusicBrainz, the recording MBID)
     lyrics: str | None = None     # NEW: enriched post-fetch via dataclasses.replace()
 
     @property
@@ -210,19 +212,19 @@ class DownloadResult:
 
 ## 6. Module responsibilities & interfaces
 
-### `providers/spotify_handler.py` (Phase 1)
-Client-Credentials auth (read-only catalog). Detects track/album/playlist, returns a normalized list, batches album/playlist pagination.
+### `providers/musicbrainz_handler.py`
+Keyless MusicBrainz lookup. Detects a MusicBrainz **release** (album) or **recording** (track) URL or bare MBID — a bare MBID is tried as a recording first, falling back to a release on HTTP 404 — or treats the input as a free-text **search** (highest-scoring recording, then a detail lookup). Returns a normalized `list[Track]`. Self-throttled to ~1 req/s with a descriptive `User-Agent`; network/API/JSON failures raise `ProviderApiError` (fatal for the run). Cover art comes from the Cover Art Archive (`/release/<mbid>/front-500`). A standalone recording has no album context, so `track_number`/`disc_number` default to 1 (known limitation).
 ```python
-class SpotifyHandler:
-    def __init__(self, client_id: str, client_secret: str) -> None: ...
-    def fetch(self, url_or_uri: str) -> list[Track]: ...
+class MusicBrainzHandler:
+    def __init__(self, rate_limit_s: float = 1.0) -> None: ...
+    def fetch(self, query_or_url_or_mbid: str) -> list[Track]: ...
 ```
 
 ### `download/matcher.py` (Phase 2) — the make-or-break module
 **Normalize both sides before comparing** (this is where most clones fail):
 - strip `(feat. …)`, `(ft. …)`, `[Official Audio]`, `(Official Video)`, `(Lyrics)`, lowercase, drop punctuation, unify `feat/ft/featuring`.
 - match the **set of artists**, not the joined string.
-Then score candidates with **duration** as the heaviest weight (reject if off by > ~10s), title/artist fuzzy similarity (`rapidfuzz`), bonus for `- Topic` / "Official Audio" channels, penalty for `live/cover/remix/sped up/8d` unless the Spotify title itself contains them. Use ISRC where available for near-certain matches.
+Then score candidates with **duration** as the heaviest weight (reject if off by > ~10s), title/artist fuzzy similarity (`rapidfuzz`), bonus for `- Topic` / "Official Audio" channels, penalty for `live/cover/remix/sped up/8d` unless the source track's title itself contains them. Use ISRC where available for near-certain matches.
 ```python
 def find_best_match(track: Track, ydl) -> str | None: ...
 ```
@@ -274,18 +276,18 @@ Typer commands; `--format`, `--bitrate`, `--output`, `--workers`, `--cookies-fro
 
 ```
 CratedigError (base)
-├── ConfigError          # missing/invalid Spotify creds        → fatal, exit early
-├── SpotifyError
+├── ConfigError          # retained but unused (MusicBrainz is keyless)
+├── ProviderError
 │   ├── InvalidUrlError                                          → fatal for that input
-│   └── SpotifyApiError  # 401/429/5xx                           → backoff, then fatal
+│   └── ProviderApiError # MusicBrainz network / 4xx / 5xx       → fatal for the run
 ├── MatchNotFoundError                                           → per-track NOT_FOUND
 ├── DownloadError        # yt-dlp/ffmpeg                         → per-track FAILED
 └── TaggingError                                                 → per-track FAILED (file kept)
 ```
 
-- **Fail fast on config, fail soft per track.** A 200-song playlist never aborts because of one bad track.
+- **Fail fast on the provider fetch, fail soft per track.** A 200-track album never aborts because of one bad track.
 - **Lyrics never raise.** LRCLIB miss / 404 / timeout → `lyrics = None`, tag everything else, move on. (No `LyricsError` is propagated; failures are swallowed inside `lyrics_fetcher`.)
-- Spotify 429 → respect `Retry-After`, exponential backoff. YouTube bot-wall → clear message pointing to `--cookies-from-browser` and `yt-dlp -U`.
+- MusicBrainz 503 (rate limit) → avoided by self-throttling to ~1 req/s with a descriptive `User-Agent`. YouTube bot-wall → clear message pointing to `--cookies-from-browser` and `yt-dlp -U`.
 
 ---
 
@@ -293,14 +295,14 @@ CratedigError (base)
 
 Download is I/O- and subprocess-bound, so **`ThreadPoolExecutor`** is correct (not asyncio: yt-dlp is blocking).
 - Default **2–3 workers** (not 4) with **random jitter** (1–3s) between requests — YouTube anti-bot is aggressive; over-parallelizing causes 429s / temp IP blocks and is often *slower* overall.
-- Fetch Spotify metadata in one cheap sequential pass, then fan out downloads.
+- Fetch MusicBrainz metadata in one cheap, rate-limited sequential pass, then fan out downloads.
 - Lyrics calls are light; do them inside each worker after the download.
 
 ---
 
-## 9. Configuration & secrets
+## 9. Configuration
 
-- **Spotify creds: prompt-per-user (DECIDED).** Never bundle our own Client ID/secret in the `.exe` — shared keys hit Spotify's rate limit across all users and risk revocation on suspected leak. Prompt on first run, cache in `%APPDATA%\cratedig\config.toml`. `.env` for local dev; `.env.example` committed, real `.env` never.
+- **MusicBrainz: no credentials.** The API is keyless — nothing to prompt for, bundle, or cache. We send a descriptive `User-Agent` and self-throttle to ~1 req/s (HTTP 503 above that). Optional output/download knobs come from env / a local `.env`; there are no secrets. (`ConfigError` is retained in the exception hierarchy but is now unused.)
 - **LRCLIB:** no key. Just a descriptive `User-Agent` (e.g. `cratedig/0.1.0 (+repo-url)`).
 
 ---
@@ -320,7 +322,7 @@ Download is I/O- and subprocess-bound, so **`ThreadPoolExecutor`** is correct (n
 | Phase | Deliverable | Done when |
 |---|---|---|
 | **0 — Scaffold** | repo skeleton, `pyproject.toml`, `requirements*.txt`, `.env.example`, `.gitignore`, `models.py`, `exceptions.py`, empty modules | `pip install -e .` works; `crate --help` prints. |
-| **1 — Spotify** | `spotify_handler.py` (track→album→playlist), mocked tests | real track URL → correct `Track`. |
+| **1 — Metadata** | `musicbrainz_handler.py` (search / release / recording), mocked tests | a query or MBID → correct `Track`(s). |
 | **2 — Matcher** | `matcher.py` normalize + score | sensible YT URL for known tracks; scoring unit-tested. |
 | **3 — Download** | `youtube_downloader.py` (bestaudio→ffmpeg→mp3, skip-if-exists, cookies flag) | produces a playable `.mp3`. |
 | **4 — Tagging + Lyrics** | `tagger.py` (ID3 + art + USLT) **and** `lyrics_fetcher.py` (LRCLIB, soft-fail) | tags + art + embedded lyrics visible in a player; missing lyrics never crash. |
@@ -333,7 +335,6 @@ Download is I/O- and subprocess-bound, so **`ThreadPoolExecutor`** is correct (n
 ## 12. `requirements.txt`
 
 ```
-spotipy>=2.24
 yt-dlp>=2024.0
 mutagen>=1.47
 typer>=0.12
@@ -355,6 +356,12 @@ rapidfuzz>=3.9
 2. **Synced lyrics** — embed plain only (USLT), or also write the LRC `syncedLyrics` as a `<track>.lrc` sidecar file for karaoke-capable players? (Cheap bonus.)
 3. **Matcher strictness** — duration tolerance + how hard to penalize live/remix.
 4. **Final name** — confirm `cratedig` (§14) and verify availability on PyPI + GitHub.
+
+**Known limitations (MusicBrainz source):**
+- A free-text search resolves to the single highest-scoring recording (no interactive disambiguation yet).
+- A standalone recording (no release context) gets `track_number`/`disc_number` = 1 and no album/cover art.
+- No playlist input — MusicBrainz has no user playlists; pass a release (album) or recording (track).
+- A bare MBID is type-ambiguous, so it is tried as a recording first and falls back to a release on HTTP 404.
 
 ---
 
