@@ -100,7 +100,7 @@ def test_happy_path_all_success_with_lyrics(tmp_path):
         tagger=tagger,
     )
 
-    results = orch.run("spotify:album:x")
+    results = orch.run("some album")
 
     assert [r.status for r in results] == [ResultStatus.SUCCESS, ResultStatus.SUCCESS]
     assert all(r.lyrics_found for r in results)

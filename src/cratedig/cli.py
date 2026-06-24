@@ -20,16 +20,16 @@ from cratedig.config import get_settings
 from cratedig.core.orchestrator import Orchestrator
 from cratedig.download.matcher import find_best_match
 from cratedig.download.youtube_downloader import YouTubeDownloader
-from cratedig.exceptions import ConfigError, InvalidUrlError, ProviderApiError
+from cratedig.exceptions import ProviderError
 from cratedig.logging_setup import setup_logging
 from cratedig.lyrics.lyrics_fetcher import fetch_lyrics
 from cratedig.models import DownloadResult, ResultStatus
-from cratedig.providers.spotify_handler import SpotifyHandler
+from cratedig.providers.musicbrainz_handler import MusicBrainzHandler
 from cratedig.tagging.tagger import Tagger
 
 app = typer.Typer(
     name="crate",
-    help="Spotify-to-Audio CLI — fetch metadata, find audio on YouTube, tag + embed lyrics.",
+    help="Music-to-Audio CLI — MusicBrainz metadata, audio from YouTube, tagged + lyrics.",
     add_completion=False,
     no_args_is_help=True,
 )
@@ -62,12 +62,15 @@ def main(
         ),
     ] = False,
 ) -> None:
-    """cratedig — download audio for Spotify tracks, albums, and playlists."""
+    """cratedig — download audio for MusicBrainz releases/recordings (or a search)."""
 
 
 @app.command()
 def download(
-    url: Annotated[str, typer.Argument(help="Spotify track / album / playlist URL or URI.")],
+    query: Annotated[
+        str,
+        typer.Argument(help="MusicBrainz release/recording URL or MBID, or a search query."),
+    ],
     audio_format: Annotated[
         str | None, typer.Option("--format", help="Audio format (default: mp3).")
     ] = None,
@@ -91,7 +94,7 @@ def download(
         bool, typer.Option("--verbose", help="Enable verbose (INFO) logging.")
     ] = False,
 ) -> None:
-    """Download audio for a Spotify track, album, or playlist URL."""
+    """Download audio for a MusicBrainz release/recording, or the best search match."""
     setup_logging(verbose)
     try:
         settings = get_settings(
@@ -102,7 +105,7 @@ def download(
             cookies_from_browser=cookies_from_browser,
         )
         orchestrator = Orchestrator(
-            handler=SpotifyHandler(settings.spotify_client_id, settings.spotify_client_secret),
+            handler=MusicBrainzHandler(),
             downloader=YouTubeDownloader(
                 settings.output_dir,
                 audio_format=settings.audio_format,
@@ -116,11 +119,14 @@ def download(
             max_workers=settings.max_workers,
         )
         with console.status("[bold]Fetching metadata and downloading…"):
-            results = orchestrator.run(url)
-    except (ConfigError, InvalidUrlError, ProviderApiError) as exc:
+            results = orchestrator.run(query)
+    except ProviderError as exc:  # InvalidUrlError / ProviderApiError (fatal)
         console.print(Panel(str(exc), title="cratedig error", border_style="red"))
         raise typer.Exit(code=1) from exc
 
+    if not results:
+        console.print(f"No tracks found for {query!r}.")
+        return
     _print_summary(results)
 
 

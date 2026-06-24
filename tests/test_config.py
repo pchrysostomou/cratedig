@@ -1,21 +1,12 @@
-"""Phase 5 tests for config.Settings / get_settings (no real network)."""
+"""Tests for config.Settings / get_settings (keyless; no real network)."""
 
 from __future__ import annotations
 
 import pytest
 
 from cratedig.config import get_settings
-from cratedig.exceptions import ConfigError
 
-_ENV_VARS = [
-    "SPOTIFY_CLIENT_ID",
-    "SPOTIFY_CLIENT_SECRET",
-    "OUTPUT_DIR",
-    "AUDIO_FORMAT",
-    "BITRATE",
-    "MAX_WORKERS",
-    "COOKIES_FROM_BROWSER",
-]
+_ENV_VARS = ["OUTPUT_DIR", "AUDIO_FORMAT", "BITRATE", "MAX_WORKERS", "COOKIES_FROM_BROWSER"]
 
 
 @pytest.fixture(autouse=True)
@@ -26,36 +17,36 @@ def _isolated_env(monkeypatch, tmp_path):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_env_credentials_populate_settings(monkeypatch):
-    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "id-123")
-    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "secret-456")
+def test_defaults():
+    settings = get_settings()
+    assert settings.audio_format == "mp3"
+    assert settings.bitrate == "192"
+    assert settings.max_workers == 3
+    assert settings.cookies_from_browser is None
+
+
+def test_no_credentials_required():
+    # MusicBrainz is keyless: building settings never requires/raises on credentials.
+    settings = get_settings()
+    assert not hasattr(settings, "spotify_client_id")
+
+
+def test_env_populates_settings(monkeypatch):
+    monkeypatch.setenv("AUDIO_FORMAT", "opus")
+    monkeypatch.setenv("MAX_WORKERS", "5")
 
     settings = get_settings()
 
-    assert settings.spotify_client_id == "id-123"
-    assert settings.spotify_client_secret == "secret-456"
-    assert settings.audio_format == "mp3"  # built-in default
-    assert settings.max_workers == 3
+    assert settings.audio_format == "opus"
+    assert settings.max_workers == 5
 
 
-def test_missing_credentials_raise_config_error():
-    with pytest.raises(ConfigError):
-        get_settings()
-
-
-def test_partial_credentials_raise_config_error(monkeypatch):
-    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "id-only")  # secret still missing
-    with pytest.raises(ConfigError):
-        get_settings()
-
-
-def test_cli_overrides_beat_defaults(monkeypatch, tmp_path):
-    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "id")
-    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "sec")
+def test_cli_overrides_beat_env_and_defaults(monkeypatch, tmp_path):
+    monkeypatch.setenv("AUDIO_FORMAT", "flac")  # env value...
 
     settings = get_settings(
         output_dir=tmp_path,
-        audio_format="opus",
+        audio_format="opus",  # ...overridden by the CLI
         bitrate="320",
         max_workers=1,
         cookies_from_browser="firefox",
@@ -69,10 +60,9 @@ def test_cli_overrides_beat_defaults(monkeypatch, tmp_path):
 
 
 def test_none_overrides_are_ignored(monkeypatch):
-    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "id")
-    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "sec")
+    monkeypatch.setenv("AUDIO_FORMAT", "flac")
 
     settings = get_settings(audio_format=None, bitrate=None)
 
-    assert settings.audio_format == "mp3"  # None override dropped -> default
-    assert settings.bitrate == "192"
+    assert settings.audio_format == "flac"  # None override dropped -> env wins
+    assert settings.bitrate == "192"  # None override dropped -> built-in default

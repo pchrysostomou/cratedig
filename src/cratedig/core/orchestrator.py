@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 class Orchestrator:
-    """Runs the metadata -> match -> download -> tag pipeline for a Spotify URL.
+    """Runs the metadata -> match -> download -> tag pipeline for a source input.
 
     Collaborators are injected so the pipeline is unit-testable with fakes:
     ``matcher`` is a callable ``(track, ydl) -> str | None`` and ``lyrics_fetcher``

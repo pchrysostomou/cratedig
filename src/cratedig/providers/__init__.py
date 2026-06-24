@@ -1,1 +1,1 @@
-"""Metadata providers (Spotify)."""
+"""Metadata providers (MusicBrainz)."""

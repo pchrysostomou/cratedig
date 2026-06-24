@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cratedig"
 version = "0.1.0"
-description = "Spotify-to-Audio CLI: fetch metadata, find matching audio on YouTube, transcode to MP3, and embed ID3 tags + cover art + lyrics."
+description = "Music metadata-to-Audio CLI: fetch metadata (MusicBrainz), find matching audio on YouTube, transcode to MP3, and embed ID3 tags + cover art + lyrics."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Prodromos Chrysostomou" },
 ]
-keywords = ["spotify", "youtube", "music", "download", "cli", "lyrics", "id3"]
+keywords = ["musicbrainz", "youtube", "music", "download", "cli", "lyrics", "id3"]
 # NOTE: No "License ::" trove classifier is listed. Under PEP 639, setuptools >=77
 # rejects combining a SPDX license expression (above) with a license classifier.
 classifiers = [
@@ -29,7 +29,6 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio",
 ]
 dependencies = [
-    "spotipy>=2.24",
     "yt-dlp>=2024.0",
     "mutagen>=1.47",
     "typer>=0.12",
