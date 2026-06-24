@@ -1,0 +1,47 @@
+{
+  "id": "22222222-2222-2222-2222-222222222222",
+  "title": "Hurry Up, We're Dreaming",
+  "date": "2011-10-18",
+  "media": [
+    {
+      "position": 1,
+      "tracks": [
+        {
+          "position": 1,
+          "recording": {
+            "id": "rec-a",
+            "title": "Intro",
+            "length": 100000,
+            "artist-credit": [{ "name": "M83" }],
+            "isrcs": []
+          }
+        },
+        {
+          "position": 2,
+          "recording": {
+            "id": "rec-b",
+            "title": "Midnight City",
+            "length": 240000,
+            "artist-credit": [{ "name": "M83" }, { "name": "Susanne Sundfør" }],
+            "isrcs": ["USQX91101101"]
+          }
+        }
+      ]
+    },
+    {
+      "position": 2,
+      "tracks": [
+        {
+          "position": 1,
+          "recording": {
+            "id": "rec-c",
+            "title": "Outro",
+            "length": 120000,
+            "artist-credit": [{ "name": "M83" }],
+            "isrcs": []
+          }
+        }
+      ]
+    }
+  ]
+}
