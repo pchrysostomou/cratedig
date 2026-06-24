@@ -1,0 +1,17 @@
+{
+  "next": null,
+  "items": [
+    {
+      "track": {
+        "id": "plB",
+        "name": "Song B",
+        "duration_ms": 222000,
+        "track_number": 7,
+        "disc_number": 2,
+        "artists": [{ "name": "Artist B" }],
+        "external_ids": {},
+        "album": { "name": "Album B", "release_date": "2020", "images": [] }
+      }
+    }
+  ]
+}

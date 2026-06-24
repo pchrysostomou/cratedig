@@ -1,0 +1,26 @@
+{
+  "name": "Hurry Up, We're Dreaming",
+  "release_date": "2011-10-18",
+  "images": [{ "url": "https://img/album.jpg", "height": 640, "width": 640 }],
+  "tracks": {
+    "next": "https://api.spotify.com/v1/albums/x/tracks?offset=2&limit=2",
+    "items": [
+      {
+        "id": "alb1",
+        "name": "Intro",
+        "duration_ms": 100000,
+        "track_number": 1,
+        "disc_number": 1,
+        "artists": [{ "name": "M83" }]
+      },
+      {
+        "id": "alb2",
+        "name": "Midnight City",
+        "duration_ms": 240000,
+        "track_number": 2,
+        "disc_number": 1,
+        "artists": [{ "name": "M83" }]
+      }
+    ]
+  }
+}
