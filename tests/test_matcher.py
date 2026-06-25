@@ -8,6 +8,7 @@ import pytest
 
 from cratedig.download.matcher import (
     DURATION_TOLERANCE_S,
+    MIN_SCORE,
     SEARCH_RESULTS,
     _normalize,
     _score,
@@ -279,3 +280,53 @@ def test_diagnostic_logging_reports_no_match(caplog):
 
     assert result is None
     assert "no acceptable match" in caplog.text
+
+
+# -- Bug A: unknown/zero target duration skips the duration gate -------------
+
+
+def test_unknown_target_skips_gate_and_good_match_clears_threshold(caplog):
+    # MusicBrainz returned no length -> duration_ms=0 (target unknown). A correct title +
+    # artist + "- Topic" channel must clear MIN_SCORE despite the neutral (0) duration component,
+    # and a candidate that WOULD be far past tolerance must NOT be rejected for duration.
+    track = _track(title="Get Lucky", artists=("Daft Punk",), duration_ms=0)
+    entry = _entry("gl", "Daft Punk - Get Lucky", 248, "Daft Punk - Topic")  # 248s vs 0s target
+
+    assert _score(track, entry) >= MIN_SCORE  # good non-duration match clears the floor
+
+    with caplog.at_level(logging.INFO, logger="cratedig.download.matcher"):
+        result = find_best_match(track, FakeYDL([entry]))
+
+    assert result == _url("gl")  # not rejected for duration; chosen on title/artist/channel
+    assert "duration gate skipped (unknown target)" in caplog.text
+
+
+def test_unknown_target_still_rejects_weak_match():
+    # Skipping the duration gate must NOT lower the bar for an unrelated candidate.
+    track = _track(title="Get Lucky", artists=("Daft Punk",), duration_ms=0)
+    entry = _entry("x", "Some Unrelated Song", 100, "Random Uploader")
+    assert find_best_match(track, FakeYDL([entry])) is None
+
+
+# -- Bug B: wider (20s) tolerance -------------------------------------------
+
+
+def test_delta_13_now_accepted():
+    # Was rejected at +-10s; a real official upload 13s off is now within the 20s tolerance.
+    track = _track(title="Song", duration_ms=200_000)
+    entry = _entry("ok", "Artist A - Song", 213, "Artist A - Topic")  # delta 13s
+    assert find_best_match(track, FakeYDL([entry])) == _url("ok")
+
+
+def test_delta_39_still_rejected():
+    track = _track(title="Song", duration_ms=200_000)
+    entry = _entry("far", "Artist A - Song", 239, "Artist A - Topic")  # delta 39s
+    assert find_best_match(track, FakeYDL([entry])) is None
+
+
+def test_tolerance_boundary_is_inclusive_at_20s():
+    track = _track(title="Song", duration_ms=200_000)
+    at = _entry("at", "Artist A - Song", 220, "Artist A - Topic")  # delta 20s -> accepted
+    over = _entry("over", "Artist A - Song", 221, "Artist A - Topic")  # delta 21s -> rejected
+    assert find_best_match(track, FakeYDL([at])) == _url("at")
+    assert find_best_match(track, FakeYDL([over])) is None
