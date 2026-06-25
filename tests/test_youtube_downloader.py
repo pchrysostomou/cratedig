@@ -60,6 +60,10 @@ def _make_fake_ydl(recorder, *, behavior="success"):
                 raise YtdlpDownloadError("Postprocessing: ffprobe and ffmpeg not found")
             elif behavior == "ffmpeg_transcode_error":
                 raise YtdlpDownloadError("ffmpeg exited with code 1: Invalid data found")
+            elif behavior == "video_unavailable":
+                raise YtdlpDownloadError(
+                    "ERROR: [youtube] dQw4w9WgXcQ: Video unavailable. This video is not available"
+                )
             elif behavior == "no_output":
                 pass  # claim success but write nothing
 
@@ -226,6 +230,43 @@ def test_transcode_error_not_mislabeled_as_missing(tmp_path, mocker, ffmpeg_pres
     with pytest.raises(DownloadError) as excinfo:
         dl.download("u", _track())
     assert "FFmpeg is required" not in str(excinfo.value)
+
+
+def test_video_unavailable_error_wrapped_as_download_error(tmp_path, mocker, ffmpeg_present):
+    # yt-dlp's "This video is not available" must surface as a cratedig DownloadError so the
+    # orchestrator can fall back to the next ranked candidate instead of aborting on a raw error.
+    recorder = {}
+    mocker.patch.object(mod, "YoutubeDL", _make_fake_ydl(recorder, behavior="video_unavailable"))
+    dl = YouTubeDownloader(tmp_path)
+
+    with pytest.raises(DownloadError, match="not available"):
+        dl.download("https://www.youtube.com/watch?v=dQw4w9WgXcQ", _track())
+
+
+def test_mkdir_failure_wrapped_as_download_error(tmp_path, mocker, ffmpeg_present):
+    # A filesystem error creating the output dir must also be wrapped: it once ran outside the
+    # try and escaped raw, bypassing the orchestrator's per-candidate DownloadError fallback.
+    recorder = {}
+    mocker.patch.object(mod, "YoutubeDL", _make_fake_ydl(recorder))
+    mocker.patch.object(Path, "mkdir", side_effect=OSError("permission denied"))
+    dl = YouTubeDownloader(tmp_path / "nested")
+
+    with pytest.raises(DownloadError, match="permission denied"):
+        dl.download("u", _track())
+    assert "constructed" not in recorder  # failed before yt-dlp was ever built
+
+
+def test_target_exists_oserror_wrapped_as_download_error(tmp_path, mocker, ffmpeg_present):
+    # The idempotency probe (target.exists()) must also honor download()'s DownloadError-only
+    # contract: an EACCES-style OSError from stat() is wrapped, not leaked raw past the fallback.
+    recorder = {}
+    mocker.patch.object(mod, "YoutubeDL", _make_fake_ydl(recorder))
+    mocker.patch.object(Path, "exists", side_effect=OSError("permission denied"))
+    dl = YouTubeDownloader(tmp_path)
+
+    with pytest.raises(DownloadError, match="permission denied"):
+        dl.download("u", _track())
+    assert "constructed" not in recorder  # failed before yt-dlp was ever built
 
 
 def test_missing_output_after_success_wrapped(tmp_path, mocker, ffmpeg_present):

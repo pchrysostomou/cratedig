@@ -66,15 +66,18 @@ def _route(mocker, routes):
     return captured
 
 
-def _rec(rid, title, artist, score=100, releases=None):
+def _rec(rid, title, artist, score=100, releases=None, length=None):
     """A search-result recording candidate."""
-    return {
+    rec = {
         "id": rid,
         "title": title,
         "score": score,
         "artist-credit": [{"name": artist}],
         "releases": releases or [],
     }
+    if length is not None:
+        rec["length"] = length
+    return rec
 
 
 def _detail(rid="looked-up", title="Song", artist="Artist"):
@@ -519,6 +522,58 @@ def test_tie_break_is_deterministic_regardless_of_order(mocker, order):
     looked_up = _looked_up(captured)
     assert any("/recording/bbb" in url for url in looked_up)
     assert not any("/recording/aaa" in url for url in looked_up)
+
+
+# -- search relevance: canonical, duration-stable selection (BUG 1) ---------
+
+_ALBUM = [{"release-group": {"primary-type": "Album"}}]
+_COMPILATION = [{"release-group": {"primary-type": "Album", "secondary-types": ["Compilation"]}}]
+
+
+def test_search_prefers_canonical_studio_over_short_edit(mocker):
+    # A 5:28 studio-album cut vs a 3:05 edit on a compilation, same artist. The edit even has
+    # the higher (volatile) MB score, but the canonical studio release + common duration win.
+    canonical = _rec("canon", "Lose Yourself", "Eminem", score=80, length=328000, releases=_ALBUM)
+    edit = _rec("edit", "Lose Yourself", "Eminem", score=100, length=185000, releases=_COMPILATION)
+    captured = _search_routes(mocker, [edit, canonical])  # edit listed first AND higher score
+
+    MusicBrainzHandler().fetch("Eminem - Lose Yourself")
+
+    looked = _looked_up(captured)
+    assert any("/recording/canon" in u for u in looked)
+    assert not any("/recording/edit" in u for u in looked)
+
+
+def test_search_prefers_modal_duration_when_release_type_ties(mocker):
+    # All three are canonical albums (is_canonical ties), so the modal (most common) duration
+    # decides: two 5:28 cuts outvote the lone 3:05 edit -> a full cut wins, the edit loses.
+    full_a = _rec("full-a", "Lose Yourself", "Eminem", score=90, length=328000, releases=_ALBUM)
+    full_b = _rec("full-b", "Lose Yourself", "Eminem", score=90, length=328000, releases=_ALBUM)
+    edit = _rec("edit", "Lose Yourself", "Eminem", score=100, length=185000, releases=_ALBUM)
+    captured = _search_routes(mocker, [edit, full_a, full_b])
+
+    MusicBrainzHandler().fetch("Eminem - Lose Yourself")
+
+    looked = _looked_up(captured)
+    assert not any("/recording/edit" in u for u in looked)
+    assert any("/recording/full-" in u for u in looked)  # one of the modal-duration cuts
+
+
+def test_search_selection_is_deterministic_regardless_of_order_and_score(mocker):
+    # Two equally-good canonical cuts; "aaa" carries the higher (run-to-run volatile) MB score.
+    # Selection must NOT depend on that score or on input order -> the id tie-break always wins.
+    aaa = _rec("aaa", "Lose Yourself", "Eminem", score=100, length=328000, releases=_ALBUM)
+    bbb = _rec("bbb", "Lose Yourself", "Eminem", score=70, length=328000, releases=_ALBUM)
+
+    picks = []
+    for order in ([aaa, bbb], [bbb, aaa]):
+        captured = _search_routes(mocker, order)
+        MusicBrainzHandler().fetch("Eminem - Lose Yourself")
+        picks.append(_looked_up(captured))
+
+    assert picks[0] == picks[1]  # identical recording chosen both times (deterministic)
+    assert all(any("/recording/bbb" in u for u in p) for p in picks)  # id tie-break, not score
+    assert all(not any("/recording/aaa" in u for u in p) for p in picks)
 
 
 # -- search relevance: legit artists must not be wrongly filtered -----------
