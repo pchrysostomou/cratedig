@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from cratedig.core.orchestrator import Orchestrator
+from cratedig.core.orchestrator import _JITTER_MAX_S, _JITTER_MIN_S, Orchestrator
 from cratedig.download.youtube_downloader import _output_ext, _safe_filename
 from cratedig.exceptions import DownloadError, ProviderApiError, TaggingError
 from cratedig.models import ResultStatus, Track
 
 
-def _track(title="Song", artists=("Artist A",)):
+def _track(title="Song", artists=("Artist A",), source_id="sid"):
     return Track(
         title=title,
         artists=list(artists),
@@ -23,7 +25,7 @@ def _track(title="Song", artists=("Artist A",)):
         disc_number=1,
         release_year=None,
         cover_art_url=None,
-        source_id="sid",
+        source_id=source_id,
     )
 
 
@@ -356,3 +358,116 @@ def test_mid_list_success_stops_further_attempts(tmp_path):
 
     assert result.status == ResultStatus.SUCCESS and result.youtube_url == "u2"
     assert [c[0] for c in downloader.calls] == ["u1", "u2"]  # u3 never attempted
+
+
+# -- Phase 6: concurrency ---------------------------------------------------
+
+
+class _OrderedDownloader:
+    """Forces tracks to FINISH in reverse submission order via an event chain, recording it.
+
+    Track i waits on gate i; the last track's gate is pre-set so it runs first, and each track
+    releases the previous index's gate when it finishes -> completion order is strictly reversed.
+    Requires max_workers >= n so every worker is in flight (else the chain would deadlock).
+    """
+
+    def __init__(self, output_dir, n, audio_format="mp3"):
+        self.output_dir = Path(output_dir)
+        self.audio_format = audio_format
+        self.completion_order: list[int] = []
+        self._lock = threading.Lock()
+        self._gates = [threading.Event() for _ in range(n)]
+        self._gates[n - 1].set()  # last-submitted track is ungated -> finishes first
+
+    def download(self, video_url, track):
+        idx = int(track.source_id)
+        assert self._gates[idx].wait(timeout=5), f"gate {idx} never opened (deadlock?)"
+        path = self.output_dir / _safe_filename(track, _output_ext(self.audio_format))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("audio")
+        with self._lock:
+            self.completion_order.append(idx)
+        if idx > 0:
+            self._gates[idx - 1].set()  # release the previous index -> reverse completion
+        return str(path)
+
+
+def test_results_in_input_order_despite_out_of_order_completion(tmp_path):
+    n = 3
+    tracks = [_track(title=f"S{i}", source_id=str(i)) for i in range(n)]
+    downloader = _OrderedDownloader(tmp_path, n)
+    orch = _orch(_FakeHandler(tracks), downloader, max_workers=n)
+
+    results = orch.run("u")
+
+    assert [r.track.title for r in results] == ["S0", "S1", "S2"]  # INPUT order, not completion
+    assert [r.status for r in results] == [ResultStatus.SUCCESS] * n
+    assert downloader.completion_order == [2, 1, 0]  # they actually finished in REVERSE
+
+
+def test_per_track_isolation_under_concurrency(tmp_path):
+    class _SelectiveTagger:
+        def __init__(self):
+            self.tagged = []
+            self._lock = threading.Lock()
+
+        def tag(self, file_path, track):
+            if track.title == "Bad":
+                raise RuntimeError("boom in worker")  # not a TaggingError -> generic isolation
+            with self._lock:
+                self.tagged.append(track)
+
+    tracks = [
+        _track(title="Good0", source_id="0"),
+        _track(title="Bad", source_id="1"),
+        _track(title="Good2", source_id="2"),
+    ]
+    orch = _orch(
+        _FakeHandler(tracks), _FakeDownloader(tmp_path), tagger=_SelectiveTagger(), max_workers=3
+    )
+
+    results = orch.run("u")
+
+    assert [r.status for r in results] == [
+        ResultStatus.SUCCESS,
+        ResultStatus.FAILED,
+        ResultStatus.SUCCESS,
+    ]
+    assert "boom in worker" in results[1].error  # the raising worker -> that track FAILED only
+
+
+def test_executor_created_with_configured_max_workers(tmp_path, mocker):
+    pool_spy = mocker.patch(
+        "cratedig.core.orchestrator.ThreadPoolExecutor", wraps=ThreadPoolExecutor
+    )
+    tracks = [_track(title=f"S{i}", source_id=str(i)) for i in range(2)]
+    orch = _orch(_FakeHandler(tracks), _FakeDownloader(tmp_path), max_workers=5)
+
+    orch.run("u")
+
+    assert pool_spy.call_args.kwargs["max_workers"] == 5
+
+
+def test_jitter_runs_once_per_worker_without_real_sleep(tmp_path, mocker):
+    # The per-worker anti-bot jitter is applied once per track and is fully patchable (no real
+    # sleep): random.uniform is drawn over the configured range and time.sleep receives it.
+    uniform = mocker.patch("cratedig.core.orchestrator.random.uniform", return_value=1.23)
+    sleep = mocker.patch("cratedig.core.orchestrator.time.sleep")
+    tracks = [_track(title=f"S{i}", source_id=str(i)) for i in range(3)]
+    orch = _orch(_FakeHandler(tracks), _FakeDownloader(tmp_path), max_workers=3)
+
+    orch.run("u")
+
+    assert sleep.call_count == 3  # one jitter per worker
+    assert all(call.args == (1.23,) for call in sleep.call_args_list)  # slept the jittered value
+    uniform.assert_called_with(_JITTER_MIN_S, _JITTER_MAX_S)
+
+
+def test_no_tracks_skips_the_pool(tmp_path, mocker):
+    pool_spy = mocker.patch(
+        "cratedig.core.orchestrator.ThreadPoolExecutor", wraps=ThreadPoolExecutor
+    )
+    orch = _orch(_FakeHandler([]), _FakeDownloader(tmp_path))
+
+    assert orch.run("u") == []
+    pool_spy.assert_not_called()  # no tracks -> no executor built

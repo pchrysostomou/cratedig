@@ -140,6 +140,42 @@ def test_search_ydl_built_and_passed_to_orchestrator(wired):
     assert wired.call_args.kwargs["ydl"] is cli.YoutubeDL.return_value
 
 
+def test_progress_callback_passed_and_advances(wired):
+    # The CLI passes an on_progress(done, total) callback to run() and advancing it (the Rich
+    # Progress update) must not error, even in the non-tty test console.
+    def fake_run(query, on_progress=None):
+        assert callable(on_progress)
+        on_progress(1, 2)  # simulate one track completing
+        on_progress(2, 2)  # ...then the second
+        return [
+            DownloadResult(track=_track("A"), status=ResultStatus.SUCCESS),
+            DownloadResult(track=_track("B"), status=ResultStatus.SUCCESS),
+        ]
+
+    wired.return_value.run.side_effect = fake_run
+
+    result = runner.invoke(app, ["download", "two songs"])
+
+    assert result.exit_code == 0
+    assert callable(wired.return_value.run.call_args.kwargs["on_progress"])
+    assert "2 downloaded" in result.output
+
+
+def test_progress_total_none_until_first_completion_is_safe(wired):
+    # Before any track completes the bar is indeterminate (total=None); never calling on_progress
+    # must not crash, the transient bar must leave no residue, and the summary still prints.
+    def fake_run(query, on_progress=None):
+        return [DownloadResult(track=_track("Solo"), status=ResultStatus.SUCCESS)]
+
+    wired.return_value.run.side_effect = fake_run
+
+    result = runner.invoke(app, ["download", "one song"])
+
+    assert result.exit_code == 0
+    assert "1 downloaded" in result.output  # summary persists despite the transient bar
+    assert "Solo" in result.output
+
+
 def test_search_ydl_built_with_ignoreerrors(wired):
     # The search YoutubeDL must skip dead videos (a bad top result must not abort the search),
     # so it is built with ignoreerrors=True.
