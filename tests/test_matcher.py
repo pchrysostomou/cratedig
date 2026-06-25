@@ -104,7 +104,7 @@ def test_variant_entry_rejected_in_favor_of_studio():
 
 
 def test_perfect_live_entry_still_disqualified_for_studio_track():
-    # Perfect duration + title, but a (Live) tag the Spotify title lacks -> None.
+    # Perfect duration + title, but a (Live) tag the track title lacks -> None.
     track = _track(title="Song", duration_ms=200_000)
     live = _entry("live", "Artist A - Song (Live)", 200, "Artist A - Topic")
     assert find_best_match(track, FakeYDL([live])) is None
@@ -128,7 +128,7 @@ def test_variants_disqualified_for_studio_track(bad_title):
     assert find_best_match(track, FakeYDL([entry])) is None
 
 
-def test_remix_accepted_when_spotify_title_is_remix():
+def test_remix_accepted_when_track_title_is_remix():
     track = _track(title="Song (Club Remix)", duration_ms=200_000)
     entry = _entry("remix", "Artist A - Song (Club Remix)", 200, "Artist A - Topic")
     assert find_best_match(track, FakeYDL([entry])) == _url("remix")

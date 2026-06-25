@@ -13,7 +13,7 @@ class CratedigError(Exception):
 
 
 class ConfigError(CratedigError):
-    """Missing/invalid configuration (e.g. Spotify creds). Fatal — exit early."""
+    """Missing or invalid configuration (e.g. a bad value in .env or a CLI flag). Fatal."""
 
 
 class ProviderError(CratedigError):

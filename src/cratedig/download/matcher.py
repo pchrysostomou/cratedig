@@ -54,7 +54,7 @@ OFFICIAL_CHANNEL_BONUS = 5.0
 MIN_SCORE = 50.0  # floor: reject weak matches (title similarity must carry real weight)
 
 # A candidate whose title advertises one of these variants is DISQUALIFIED unless
-# the Spotify track title itself contains the same term. Matched as a whitespace-
+# the track title itself contains the same term. Matched as a whitespace-
 # delimited phrase so "sped up" (two words) and the usual "8D Audio" form are
 # detected, and "cover" is never matched inside a word like "discover".
 VARIANT_WORDS = ("live", "cover", "remix", "sped up", "nightcore", "8d", "reverb")
