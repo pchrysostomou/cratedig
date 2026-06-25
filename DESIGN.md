@@ -59,10 +59,8 @@ No new runtime dependency is needed for lyrics — `requests` is already present
 ```
 cratedig/
 ├── pyproject.toml
-├── requirements.txt
-├── requirements-dev.txt
 ├── README.md
-├── LICENSE                     # MIT (suggested)
+├── LICENSE                     # GPL-3.0-or-later
 ├── CLAUDE.md                   # Claude Code working agreement (workflow + conventions)
 ├── DESIGN.md                   # this document
 ├── .env.example
@@ -336,7 +334,7 @@ never be committed — the exe is a release artifact only.
 
 | Phase | Deliverable | Done when |
 |---|---|---|
-| **0 — Scaffold** | repo skeleton, `pyproject.toml`, `requirements*.txt`, `.env.example`, `.gitignore`, `models.py`, `exceptions.py`, empty modules | `pip install -e .` works; `crate --help` prints. |
+| **0 — Scaffold** | repo skeleton, `pyproject.toml` (deps + `[dev]` extra), `.env.example`, `.gitignore`, `models.py`, `exceptions.py`, empty modules | `pip install -e .` works; `crate --help` prints. |
 | **1 — Metadata** | `musicbrainz_handler.py` (search / release / recording), mocked tests | a query or MBID → correct `Track`(s). |
 | **2 — Matcher** | `matcher.py` normalize + score | sensible YT URL for known tracks; scoring unit-tested. |
 | **3 — Download** | `youtube_downloader.py` (bestaudio→ffmpeg→mp3, skip-if-exists, cookies flag) | produces a playable `.mp3`. |
@@ -347,20 +345,19 @@ never be committed — the exe is a release artifact only.
 
 ---
 
-## 12. `requirements.txt`
+## 12. Dependencies
+
+`pyproject.toml` is the **single source of truth** for dependencies — there are no
+`requirements*.txt` files (they were removed to avoid drift). Runtime deps live in
+`[project].dependencies` (yt-dlp, mutagen, typer, rich, pydantic, pydantic-settings,
+python-dotenv, requests, rapidfuzz); dev/test/build tools live in the
+`[project.optional-dependencies].dev` extra (pytest, pytest-mock, responses, ruff, pyinstaller).
+Install everything (the package + dev extras, editable) with:
 
 ```
-yt-dlp>=2024.0
-mutagen>=1.47
-typer>=0.12
-rich>=13.7
-pydantic>=2.7
-pydantic-settings>=2.2
-python-dotenv>=1.0
-requests>=2.31
-rapidfuzz>=3.9
+pip install -e ".[dev]"
 ```
-`requirements-dev.txt`: `pytest`, `pytest-mock`, `responses`, `ruff`, `pyinstaller`.
+
 > `ffmpeg` is NOT a pip package (see §10). No new dep added for lyrics.
 
 ---
