@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,44 @@ def _route(mocker, routes):
 
     mocker.patch.object(mb.requests, "get", side_effect=handler)
     return captured
+
+
+def _rec(rid, title, artist, score=100, releases=None):
+    """A search-result recording candidate."""
+    return {
+        "id": rid,
+        "title": title,
+        "score": score,
+        "artist-credit": [{"name": artist}],
+        "releases": releases or [],
+    }
+
+
+def _detail(rid="looked-up", title="Song", artist="Artist"):
+    """A recording-detail payload returned by the `/recording/<id>` lookup."""
+    return {
+        "id": rid,
+        "title": title,
+        "length": 200000,
+        "artist-credit": [{"name": artist}],
+        "isrcs": [],
+        "releases": [{"id": REL_MBID, "title": "Album", "date": "2000"}],
+    }
+
+
+def _search_routes(mocker, recordings):
+    """Route the `/recording` search to ``recordings``; any lookup returns a stub detail."""
+    return _route(
+        mocker,
+        [
+            ("/recording/", FakeResp(_detail())),  # checked first: the lookup
+            ("/recording", FakeResp({"recordings": recordings})),  # the search
+        ],
+    )
+
+
+def _looked_up(captured):
+    return [c["url"] for c in captured["calls"] if "/recording/" in c["url"]]
 
 
 # -- classification ---------------------------------------------------------
@@ -317,3 +356,208 @@ def test_rate_limiting_enforced_between_requests(mocker):
 
     sleep.assert_called_once()
     assert sleep.call_args[0][0] == pytest.approx(0.7)  # 1.0 - 0.3 elapsed
+
+
+# -- search relevance: query parsing + structured query ---------------------
+
+
+@pytest.mark.parametrize(
+    ("query", "artist", "title"),
+    [
+        ("Coldplay - Yellow", "Coldplay", "Yellow"),
+        ("A - B - C", "A", "B - C"),  # split on the FIRST " - "
+        ("Yellow", None, "Yellow"),  # no dash
+        ("  spaced  -  out  ", "spaced", "out"),
+    ],
+)
+def test_split_query(query, artist, title):
+    assert MusicBrainzHandler._split_query(query) == (artist, title)
+
+
+def test_lucene_structured_query():
+    assert (
+        MusicBrainzHandler._lucene("Coldplay", "Yellow")
+        == 'recording:"Yellow" AND artist:"Coldplay"'
+    )
+    assert MusicBrainzHandler._lucene(None, "Get Lucky") == 'recording:"Get Lucky"'
+
+
+def test_lucene_escapes_quote_and_backslash():
+    assert MusicBrainzHandler._lucene(None, 'a"b') == 'recording:"a\\"b"'
+    assert MusicBrainzHandler._lucene(None, "a\\b") == 'recording:"a\\\\b"'
+
+
+def test_search_sends_structured_query(mocker):
+    captured = _search_routes(mocker, [_rec("r1", "Yellow", "Coldplay")])
+
+    MusicBrainzHandler().fetch("Coldplay - Yellow")
+
+    search_call = next(c for c in captured["calls"] if "/recording/" not in c["url"])
+    assert search_call["params"]["query"] == 'recording:"Yellow" AND artist:"Coldplay"'
+    assert search_call["params"]["limit"] == 10
+
+
+# -- search relevance: artist gate (the core fix) ---------------------------
+
+
+@pytest.mark.parametrize(
+    ("query", "wrong", "right"),
+    [
+        # The high-score wrong-artist candidate must lose to the real, lower-score one.
+        (
+            "Coldplay - Yellow",
+            _rec("wrong", "Yellow", "moondabor", 100),
+            _rec("right", "Yellow", "Coldplay", 80),
+        ),
+        (
+            "Queen - Bohemian Rhapsody",
+            _rec("wrong", "Bohemian Rhapsody", "Kyle Landry", 100),
+            _rec("right", "Bohemian Rhapsody", "Queen", 70),
+        ),
+        (
+            "Daft Punk - Get Lucky",
+            _rec("wrong", "Get Lucky Remix", "HOME", 100),
+            _rec("right", "Get Lucky", "Daft Punk", 60),
+        ),
+    ],
+)
+def test_artist_gate_picks_real_artist_over_higher_score(mocker, query, wrong, right):
+    captured = _search_routes(mocker, [wrong, right])
+
+    MusicBrainzHandler().fetch(query)
+
+    looked_up = _looked_up(captured)
+    assert any("/recording/right" in url for url in looked_up)
+    assert not any("/recording/wrong" in url for url in looked_up)
+
+
+def test_artist_gate_empty_returns_empty_and_warns(mocker, caplog):
+    captured = _search_routes(mocker, [_rec("cover", "Yellow", "moondabor", 100)])
+
+    with caplog.at_level(logging.WARNING):
+        result = MusicBrainzHandler().fetch("Coldplay - Yellow")
+
+    assert result == []
+    assert _looked_up(captured) == []  # no recording was fetched
+    assert "Coldplay" in caplog.text  # the empty-gate warning is visible
+
+
+# -- search relevance: variant de-prioritization ----------------------------
+
+
+def test_variant_deprioritized_for_same_artist(mocker):
+    captured = _search_routes(
+        mocker,
+        [
+            _rec("remix", "Get Lucky (Remix)", "Daft Punk", 100),  # higher MB score...
+            _rec("studio", "Get Lucky", "Daft Punk", 80),  # ...but the studio cut wins
+        ],
+    )
+
+    MusicBrainzHandler().fetch("Daft Punk - Get Lucky")
+
+    looked_up = _looked_up(captured)
+    assert any("/recording/studio" in url for url in looked_up)
+    assert not any("/recording/remix" in url for url in looked_up)
+
+
+def test_variant_allowed_when_requested(mocker):
+    captured = _search_routes(
+        mocker,
+        [
+            _rec("remix", "Get Lucky (Remix)", "Daft Punk", 100),
+            _rec("studio", "Get Lucky", "Daft Punk", 80),
+        ],
+    )
+
+    MusicBrainzHandler().fetch("Daft Punk - Get Lucky Remix")  # user asked for the remix
+
+    assert any("/recording/remix" in url for url in _looked_up(captured))
+
+
+def test_variant_via_release_group_secondary_type(mocker):
+    live = _rec(
+        "live",
+        "Yellow",
+        "Coldplay",
+        100,
+        releases=[{"release-group": {"secondary-types": ["Live"]}}],
+    )
+    studio = _rec("studio", "Yellow", "Coldplay", 80)
+    captured = _search_routes(mocker, [live, studio])
+
+    MusicBrainzHandler().fetch("Coldplay - Yellow")
+
+    assert any("/recording/studio" in url for url in _looked_up(captured))
+
+
+def test_no_artist_ranks_by_title_then_variant(mocker):
+    captured = _search_routes(
+        mocker,
+        [
+            _rec("live", "Yellow (Live)", "Whoever", 100),
+            _rec("studio", "Yellow", "Whoever", 90),
+        ],
+    )
+
+    MusicBrainzHandler().fetch("Yellow")  # no artist -> no gate
+
+    assert any("/recording/studio" in url for url in _looked_up(captured))
+
+
+# -- search relevance: deterministic tie-break ------------------------------
+
+
+@pytest.mark.parametrize("order", [("aaa", "bbb"), ("bbb", "aaa")])
+def test_tie_break_is_deterministic_regardless_of_order(mocker, order):
+    recs = {rid: _rec(rid, "Yellow", "Coldplay", 100) for rid in ("aaa", "bbb")}
+    captured = _search_routes(mocker, [recs[order[0]], recs[order[1]]])
+
+    MusicBrainzHandler().fetch("Coldplay - Yellow")
+
+    # identical on every scored dimension -> the id tie-break makes the pick stable (always "bbb")
+    looked_up = _looked_up(captured)
+    assert any("/recording/bbb" in url for url in looked_up)
+    assert not any("/recording/aaa" in url for url in looked_up)
+
+
+# -- search relevance: legit artists must not be wrongly filtered -----------
+
+
+@pytest.mark.parametrize(
+    ("query", "credit"),
+    [
+        ("Beatles - Yesterday", "The Beatles"),  # user omits the leading "The"
+        ("The Beatles - Yesterday", "Beatles"),  # ...or MB omits it
+        ("Beyonce - Halo", "Beyonce Knowles"),  # requested name is a subset of the credit
+        ("Daft Punk - Get Lucky", "Daft Punk feat. Pharrell Williams"),  # feat. credit
+    ],
+)
+def test_artist_gate_accepts_subset_and_prefix_credits(mocker, query, credit):
+    title = query.split(" - ", 1)[1]
+    captured = _search_routes(mocker, [_rec("hit", title, credit, 90)])
+
+    result = MusicBrainzHandler().fetch(query)
+
+    assert result  # a legitimate artist must NOT be filtered out by the gate
+    assert any("/recording/hit" in url for url in _looked_up(captured))
+
+
+def test_secondary_type_variant_not_allowed_by_substring(mocker):
+    # "live" is a substring of "Deliver" but not a whole word, so the Live release must still
+    # be de-prioritized -> the studio cut wins despite a higher MB score.
+    live = _rec(
+        "live",
+        "Deliver",
+        "Some Band",
+        100,
+        releases=[{"release-group": {"secondary-types": ["Live"]}}],
+    )
+    studio = _rec("studio", "Deliver", "Some Band", 80)
+    captured = _search_routes(mocker, [live, studio])
+
+    MusicBrainzHandler().fetch("Some Band - Deliver")
+
+    looked_up = _looked_up(captured)
+    assert any("/recording/studio" in url for url in looked_up)
+    assert not any("/recording/live" in url for url in looked_up)
