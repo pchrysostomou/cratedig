@@ -26,15 +26,16 @@ class Orchestrator:
     """Runs the metadata -> match -> download -> tag pipeline for a source input.
 
     Collaborators are injected so the pipeline is unit-testable with fakes:
-    ``matcher`` is a callable ``(track, ydl) -> str | None`` and ``lyrics_fetcher``
-    a callable ``(track) -> str | None`` (or ``None`` to skip lyrics, e.g. ``--no-lyrics``).
+    ``ranker`` is a callable ``(track, ydl) -> list[str]`` (best-first candidate watch URLs)
+    and ``lyrics_fetcher`` a callable ``(track) -> str | None`` (or ``None`` to skip lyrics,
+    e.g. ``--no-lyrics``).
     """
 
     def __init__(
         self,
         handler,
         downloader,
-        matcher: Callable,
+        ranker: Callable,
         lyrics_fetcher: Callable | None,
         tagger,
         ydl,
@@ -42,7 +43,7 @@ class Orchestrator:
     ) -> None:
         self.handler = handler
         self.downloader = downloader
-        self.matcher = matcher
+        self.ranker = ranker
         self.lyrics_fetcher = lyrics_fetcher
         self.tagger = tagger
         self.ydl = ydl
@@ -56,8 +57,8 @@ class Orchestrator:
 
     def _process(self, track: Track) -> DownloadResult:
         try:
-            video_url = self.matcher(track, self.ydl)
-            if video_url is None:
+            candidates = self.ranker(track, self.ydl)
+            if not candidates:
                 return DownloadResult(
                     track=track,
                     status=ResultStatus.NOT_FOUND,
@@ -70,17 +71,31 @@ class Orchestrator:
                     track=track,
                     status=ResultStatus.SKIPPED,
                     output_path=str(target),
-                    youtube_url=video_url,
+                    youtube_url=candidates[0],
                 )
 
-            try:
-                path = self.downloader.download(video_url, track)
-            except DownloadError as exc:
+            # Try candidates best-first; fall back to the next on a download failure
+            # (e.g. "video not available", 403, region-locked). First success wins.
+            path: str | None = None
+            chosen_url: str | None = None
+            last_error: str | None = None
+            for video_url in candidates:
+                try:
+                    path = self.downloader.download(video_url, track)
+                    chosen_url = video_url
+                    break
+                except DownloadError as exc:
+                    last_error = str(exc)
+                    logger.info(
+                        "download failed for %s: %s — trying next candidate", video_url, exc
+                    )
+
+            if path is None:  # every candidate failed to download
                 return DownloadResult(
                     track=track,
                     status=ResultStatus.FAILED,
-                    youtube_url=video_url,
-                    error=str(exc),
+                    youtube_url=candidates[0],
+                    error=last_error,
                 )
 
             lyrics = self._fetch_lyrics(track)
@@ -94,7 +109,7 @@ class Orchestrator:
                     track=track,
                     status=ResultStatus.FAILED,
                     output_path=path,
-                    youtube_url=video_url,
+                    youtube_url=chosen_url,
                     lyrics_found=bool(lyrics),
                     error=f"Tagging failed (file kept): {exc}",
                 )
@@ -103,7 +118,7 @@ class Orchestrator:
                 track=track,
                 status=ResultStatus.SUCCESS,
                 output_path=path,
-                youtube_url=video_url,
+                youtube_url=chosen_url,
                 lyrics_found=bool(lyrics),
             )
         except Exception as exc:  # per-track isolation: one bad track never aborts the batch

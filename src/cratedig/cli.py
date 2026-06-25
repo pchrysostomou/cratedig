@@ -18,7 +18,7 @@ from yt_dlp import YoutubeDL
 from cratedig import __version__
 from cratedig.config import get_settings
 from cratedig.core.orchestrator import Orchestrator
-from cratedig.download.matcher import find_best_match
+from cratedig.download.matcher import rank_candidates
 from cratedig.download.youtube_downloader import YouTubeDownloader
 from cratedig.exceptions import ProviderError
 from cratedig.logging_setup import setup_logging
@@ -112,7 +112,7 @@ def download(
                 bitrate=settings.bitrate,
                 cookies_from_browser=settings.cookies_from_browser,
             ),
-            matcher=find_best_match,
+            ranker=rank_candidates,
             lyrics_fetcher=None if no_lyrics else fetch_lyrics,
             tagger=Tagger(),
             ydl=YoutubeDL({"quiet": True, "no_warnings": True}),

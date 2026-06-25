@@ -168,8 +168,10 @@ def _score(track: Track, entry: dict) -> float | None:
     return score
 
 
-def find_best_match(track: Track, ydl) -> str | None:
-    """Search YouTube via ``ydl`` and return the best watch URL, or ``None``."""
+def rank_candidates(track: Track, ydl) -> list[str]:
+    """Search YouTube via ``ydl`` and return non-disqualified candidates (score >= MIN_SCORE)
+    as watch URLs, best-first. Deterministic: ties break by video id so the same query always
+    yields the same order. The orchestrator tries these in order, falling back on the next."""
     query = track.search_query
     target = track.duration_ms / 1000  # seconds
     search = f"ytsearch{SEARCH_RESULTS}:{query}"
@@ -179,8 +181,7 @@ def find_best_match(track: Track, ydl) -> str | None:
     entries = (result or {}).get("entries") or []
     logger.info("ytsearch returned %d candidate(s) for %r", len(entries), query)
 
-    best_url: str | None = None
-    best_score = float("-inf")
+    scored: list[tuple[float, str]] = []
     for entry in entries:
         if not entry or not entry.get("id"):
             logger.info("candidate skipped: missing video id")
@@ -196,12 +197,25 @@ def find_best_match(track: Track, ydl) -> str | None:
                 MIN_SCORE,
             )
             continue
-        if score > best_score:
-            best_score = score
-            best_url = f"https://www.youtube.com/watch?v={entry['id']}"
+        scored.append((score, entry["id"]))
 
-    if best_url is not None:
-        logger.info("match %s (score %.1f) for %r", best_url, best_score, query)
+    scored.sort(key=lambda s: (-s[0], s[1]))  # score desc, then id asc (deterministic)
+    urls = [f"https://www.youtube.com/watch?v={vid}" for _, vid in scored]
+
+    if urls:
+        logger.info(
+            "match %s (score %.1f) for %r (%d ranked candidate(s))",
+            urls[0],
+            scored[0][0],
+            query,
+            len(urls),
+        )
     else:
         logger.info("no acceptable match for %r among %d candidate(s)", query, len(entries))
-    return best_url
+    return urls
+
+
+def find_best_match(track: Track, ydl) -> str | None:
+    """The single best watch URL, or ``None`` — a thin wrapper over ``rank_candidates``."""
+    ranked = rank_candidates(track, ydl)
+    return ranked[0] if ranked else None

@@ -68,19 +68,19 @@ class _FakeTagger:
             raise TaggingError("bad tags")
 
 
-def _match_ok(track, ydl):
-    return f"https://www.youtube.com/watch?v={track.source_id}"
+def _rank_one(track, ydl):
+    return [f"https://www.youtube.com/watch?v={track.source_id}"]
 
 
-def _match_none(track, ydl):
-    return None
+def _rank_none(track, ydl):
+    return []
 
 
-def _orch(handler, downloader, *, matcher=_match_ok, lyrics_fetcher=None, tagger=None):
+def _orch(handler, downloader, *, ranker=_rank_one, lyrics_fetcher=None, tagger=None):
     return Orchestrator(
         handler=handler,
         downloader=downloader,
-        matcher=matcher,
+        ranker=ranker,
         lyrics_fetcher=lyrics_fetcher,
         tagger=tagger or _FakeTagger(),
         ydl=object(),
@@ -125,9 +125,9 @@ def test_no_lyrics_fetcher_means_no_lyrics(tmp_path):
 # -- per-status outcomes ----------------------------------------------------
 
 
-def test_matcher_none_is_not_found(tmp_path):
+def test_empty_ranking_is_not_found(tmp_path):
     downloader = _FakeDownloader(tmp_path)
-    orch = _orch(_FakeHandler([_track()]), downloader, matcher=_match_none)
+    orch = _orch(_FakeHandler([_track()]), downloader, ranker=_rank_none)
 
     results = orch.run("u")
 
@@ -179,22 +179,22 @@ def test_unexpected_downloader_error_is_failed(tmp_path):
     assert "unexpected downloader crash" in result.error
 
 
-def test_unexpected_matcher_error_is_failed(tmp_path):
-    def boom_matcher(track, ydl):
-        raise RuntimeError("matcher exploded")
+def test_unexpected_ranker_error_is_failed(tmp_path):
+    def boom_ranker(track, ydl):
+        raise RuntimeError("ranker exploded")
 
-    orch = _orch(_FakeHandler([_track()]), _FakeDownloader(tmp_path), matcher=boom_matcher)
+    orch = _orch(_FakeHandler([_track()]), _FakeDownloader(tmp_path), ranker=boom_ranker)
     result = orch.run("u")[0]
     assert result.status == ResultStatus.FAILED
-    assert "matcher exploded" in result.error
+    assert "ranker exploded" in result.error
 
 
 def test_keyboard_interrupt_propagates(tmp_path):
     # BaseException (Ctrl-C) must NOT be swallowed by the per-track isolation handler.
-    def interrupting_matcher(track, ydl):
+    def interrupting_ranker(track, ydl):
         raise KeyboardInterrupt
 
-    orch = _orch(_FakeHandler([_track()]), _FakeDownloader(tmp_path), matcher=interrupting_matcher)
+    orch = _orch(_FakeHandler([_track()]), _FakeDownloader(tmp_path), ranker=interrupting_ranker)
     with pytest.raises(KeyboardInterrupt):
         orch.run("u")
 
@@ -205,7 +205,7 @@ def test_max_workers_stored_but_inert(tmp_path):
     orch = Orchestrator(
         handler=_FakeHandler([]),
         downloader=_FakeDownloader(tmp_path),
-        matcher=_match_ok,
+        ranker=_rank_one,
         lyrics_fetcher=None,
         tagger=_FakeTagger(),
         ydl=object(),
