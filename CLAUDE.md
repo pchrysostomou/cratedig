@@ -1,8 +1,9 @@
 # cratedig — Claude Code Working Agreement
 
-`cratedig` is a Python 3.10+ CLI that takes a Spotify track/album/playlist URL, fetches
-metadata (Spotipy), finds the matching audio on YouTube (yt-dlp), transcodes to MP3
-(FFmpeg), and embeds ID3 tags + cover art + lyrics (Mutagen + LRCLIB). CLI command: `crate`.
+`cratedig` is a Python 3.10+ CLI that takes a search query or a MusicBrainz release/recording
+URL or MBID, fetches metadata (MusicBrainz — free, keyless), finds the matching audio on
+YouTube (yt-dlp), transcodes to MP3 (FFmpeg), and embeds ID3 tags + cover art + lyrics
+(Mutagen + LRCLIB). CLI command: `crate`.
 
 **`DESIGN.md` is the single source of truth for architecture and the phased build plan.
 Read it before any work. This file is only the working agreement + conventions.**
@@ -23,12 +24,13 @@ Read it before any work. This file is only the working agreement + conventions.*
 
 ## Stack & layout
 - `src/cratedig/` package (`src` layout). Module map: `DESIGN.md` §3.
-- Typer + Rich (CLI) · Spotipy · yt-dlp · Mutagen · Pydantic v2 · requests (LRCLIB) · rapidfuzz.
-- Tests: pytest with ALL network mocked — no real Spotify / YouTube / LRCLIB calls in tests.
+- Typer + Rich (CLI) · MusicBrainz (keyless) + LRCLIB via `requests` · yt-dlp · Mutagen · Pydantic v2 · rapidfuzz.
+- Tests: pytest with ALL network mocked — no real MusicBrainz / YouTube / LRCLIB calls in tests.
 - Lint/format: ruff.
 
 ## Non-negotiable rules
-- NEVER bundle Spotify credentials. Prompt-per-user; cache under `%APPDATA%\cratedig\`.
+- Metadata (MusicBrainz) is KEYLESS — no credentials to bundle or prompt for. Send a
+  descriptive `User-Agent` and stay within ~1 req/s (MusicBrainz returns HTTP 503 above that).
 - Lyrics (LRCLIB) and tagging are SOFT-FAIL: a miss / 404 / timeout returns `None` and
   never raises into the pipeline.
 - Per-track failures become a `DownloadResult`, never abort the whole batch.
