@@ -55,8 +55,10 @@ htmlcov/
 CLAUDE.local.md
 .claude/
 
-# PyInstaller
-*.spec
+# PyInstaller — the hand-written cratedig.spec IS tracked (it is the build config); only the
+# build OUTPUT is ignored. The onedir build lands in dist/ and build/ (already ignored above);
+# *.exe is a release artifact and must never be committed.
+*.exe
 
 # OS / editor cruft
 .DS_Store
