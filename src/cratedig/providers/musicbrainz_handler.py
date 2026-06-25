@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections import Counter
 
 import requests
 from rapidfuzz import fuzz
@@ -41,6 +42,9 @@ _TIMEOUT = 15
 _ARTIST_MATCH_THRESHOLD = 85  # rapidfuzz score below which a candidate is not the asked artist
 _VARIANT_WORDS = ("remix", "live", "cover", "karaoke", "instrumental")
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+# Track lengths are bucketed to this width (ms) when finding the canonical (modal) duration, so
+# near-identical lengths across releases (e.g. 327.9s vs 328.1s) count as the same track.
+_DURATION_BUCKET_MS = 2000
 
 
 class MusicBrainzHandler:
@@ -152,7 +156,11 @@ class MusicBrainzHandler:
                 )
                 return []
 
-        best = max(recordings, key=lambda r: self._rank_key(artist, title, r))
+        # Canonical-duration signal: the real track length repeats across releases, so the modal
+        # duration among the (gate-passing) candidates marks the canonical cut; lone short edits
+        # stand apart. Computed once here and fed into every candidate's rank key.
+        modal_bucket = self._modal_duration_bucket(recordings)
+        best = max(recordings, key=lambda r: self._rank_key(artist, title, r, modal_bucket))
         return self._fetch_recording(best["id"])
 
     # -- search ranking helpers --------------------------------------------
@@ -218,17 +226,70 @@ class MusicBrainzHandler:
                     return True
         return False
 
+    @staticmethod
+    def _duration_bucket(recording: dict) -> int | None:
+        """Bucket a recording's length (ms) into ``_DURATION_BUCKET_MS``-wide bins, or ``None``."""
+        length = recording.get("length")
+        if isinstance(length, (int, float)) and length > 0:
+            return round(length / _DURATION_BUCKET_MS)
+        return None
+
     @classmethod
-    def _rank_key(cls, artist: str | None, title: str, recording: dict) -> tuple:
-        # artist quality -> title similarity -> non-variant -> MB score -> id (stable tie-break).
+    def _modal_duration_bucket(cls, recordings: list[dict]) -> int | None:
+        """The most common duration bucket among candidates (the canonical track length).
+
+        Ties break toward the longer duration, so a full cut beats a same-frequency short edit.
+        Returns ``None`` when no candidate carries a usable length (then it is simply not scored).
+
+        Heuristic limit: this assumes the canonical length is the *most common* one — true when
+        full cuts repeat across releases and edits are the minority. If short edits ever
+        outnumber the full cuts among the candidates, the edit bucket becomes modal and could be
+        preferred; an accepted trade-off (selection stays deterministic either way, and the
+        canonical-release signal still ranks above this one).
+        """
+        buckets = [b for b in (cls._duration_bucket(r) for r in recordings) if b is not None]
+        if not buckets:
+            return None
+        counts = Counter(buckets)
+        return max(counts, key=lambda bucket: (counts[bucket], bucket))
+
+    @staticmethod
+    def _is_canonical_release(recording: dict) -> bool:
+        """True if the recording sits on a studio Album/Single/EP (not a compilation).
+
+        Canonical track lengths live on studio releases; radio/clean edits tend to cluster on
+        compilations (greatest-hits etc.), so this prefers the original release over a comp.
+        """
+        for release in recording.get("releases") or []:
+            group = release.get("release-group") or {}
+            primary = str(group.get("primary-type") or "").strip().lower()
+            secondary = [str(s).strip().lower() for s in (group.get("secondary-types") or [])]
+            if primary in ("album", "single", "ep") and "compilation" not in secondary:
+                return True
+        return False
+
+    @classmethod
+    def _rank_key(
+        cls, artist: str | None, title: str, recording: dict, modal_bucket: int | None
+    ) -> tuple:
+        # artist quality -> title similarity -> non-variant -> canonical release -> common
+        # (modal) duration -> id (stable tie-break). MusicBrainz's relevance "score" is
+        # deliberately NOT used: it varies run-to-run for the same query, which made selection
+        # non-deterministic (a 5:28 album cut vs a 3:05 edit would flip). Every term here is a
+        # stable, recomputable property, so the same query yields the same sane recording.
         artist_score = cls._artist_score(artist, recording) if artist else 0.0
         title_sim = fuzz.token_sort_ratio(cls._norm(title), cls._norm(recording.get("title", "")))
         not_variant = 0 if cls._is_variant(title, recording) else 1
+        canonical = 1 if cls._is_canonical_release(recording) else 0
+        common_duration = (
+            1 if modal_bucket is not None and cls._duration_bucket(recording) == modal_bucket else 0
+        )
         return (
             artist_score,
             title_sim,
             not_variant,
-            recording.get("score", 0),
+            canonical,
+            common_duration,
             recording.get(
                 "id", ""
             ),  # deterministic: same query -> same pick regardless of API order
