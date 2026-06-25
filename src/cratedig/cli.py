@@ -12,6 +12,14 @@ from typing import Annotated
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 from yt_dlp import YoutubeDL
 
@@ -122,8 +130,23 @@ def download(
             ydl=YoutubeDL({"quiet": True, "no_warnings": True, "ignoreerrors": True}),
             max_workers=settings.max_workers,
         )
-        with console.status("[bold]Fetching metadata and downloading…"):
-            results = orchestrator.run(query)
+        # A single shared Progress, advanced once per completed track. The orchestrator invokes
+        # on_progress(done, total) on the main thread, so updates are sequential (Rich is also
+        # thread-safe). total stays None until the first track completes (fetch runs first).
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Fetching & downloading", total=None)
+            results = orchestrator.run(
+                query,
+                on_progress=lambda done, total: progress.update(task, completed=done, total=total),
+            )
     except ProviderError as exc:  # InvalidUrlError / ProviderApiError (fatal)
         console.print(Panel(str(exc), title="cratedig error", border_style="red"))
         raise typer.Exit(code=1) from exc

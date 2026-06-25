@@ -79,7 +79,9 @@ def _rank_none(track, ydl):
     return []
 
 
-def _orch(handler, downloader, *, ranker=_rank_one, lyrics_fetcher=None, tagger=None):
+def _orch(
+    handler, downloader, *, ranker=_rank_one, lyrics_fetcher=None, tagger=None, max_workers=3
+):
     return Orchestrator(
         handler=handler,
         downloader=downloader,
@@ -87,7 +89,17 @@ def _orch(handler, downloader, *, ranker=_rank_one, lyrics_fetcher=None, tagger=
         lyrics_fetcher=lyrics_fetcher,
         tagger=tagger or _FakeTagger(),
         ydl=object(),
+        max_workers=max_workers,
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_jitter(mocker):
+    # Phase 6 adds a 0.5-2.0s per-worker jitter sleep before each track hits YouTube. Neutralize
+    # it so the suite never really sleeps (the orchestrator imports `random` and `time` at module
+    # scope). Tests that need to assert on the jitter patch it explicitly.
+    mocker.patch("cratedig.core.orchestrator.random.uniform", return_value=0.0)
+    mocker.patch("cratedig.core.orchestrator.time.sleep")
 
 
 # -- happy path -------------------------------------------------------------
@@ -202,8 +214,8 @@ def test_keyboard_interrupt_propagates(tmp_path):
         orch.run("u")
 
 
-def test_max_workers_stored_but_inert(tmp_path):
-    # Phase 5 is single-threaded; max_workers is stored (default 3) but not yet used.
+def test_max_workers_stored(tmp_path):
+    # max_workers is stored (default 3) and, as of Phase 6, drives the thread pool in run().
     assert _orch(_FakeHandler([]), _FakeDownloader(tmp_path)).max_workers == 3
     orch = Orchestrator(
         handler=_FakeHandler([]),

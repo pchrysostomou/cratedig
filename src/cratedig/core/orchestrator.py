@@ -1,18 +1,22 @@
 # cratedig — Copyright (C) 2026 Prodromos Chrysostomou
 # Licensed under the GNU General Public License v3.0 or later. See LICENSE.
-"""Pipeline orchestration (Phase 5) — single-threaded, end-to-end.
+"""Pipeline orchestration — concurrent, end-to-end (Phase 6).
 
 Owns the per-track pipeline (match -> download -> enrich with lyrics -> tag),
 isolating every per-track failure into a ``DownloadResult`` so one bad track
-never aborts the batch. Concurrency (the thread pool) is Phase 6.
-See DESIGN.md §4, §6, §7.
+never aborts the batch. Tracks download in parallel via a ``ThreadPoolExecutor``
+(``max_workers``); metadata is fetched sequentially first so the MusicBrainz
+rate limiter is unaffected. See DESIGN.md §4, §6, §7, §8.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import logging
+import random
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from cratedig.download import youtube_downloader as _ytdl
@@ -20,6 +24,11 @@ from cratedig.exceptions import DownloadError, TaggingError
 from cratedig.models import DownloadResult, ResultStatus, Track
 
 logger = logging.getLogger(__name__)
+
+# Per-worker startup jitter (DESIGN.md §8): a small random delay before each track hits YouTube,
+# so concurrent workers don't all fire at once and trip anti-bot heuristics. Patchable in tests.
+_JITTER_MIN_S = 0.5
+_JITTER_MAX_S = 2.0
 
 
 class Orchestrator:
@@ -47,16 +56,52 @@ class Orchestrator:
         self.lyrics_fetcher = lyrics_fetcher
         self.tagger = tagger
         self.ydl = ydl
-        self.max_workers = max_workers  # stored; the thread pool is Phase 6
+        self.max_workers = max_workers  # drives the ThreadPoolExecutor in run()
 
-    def run(self, url: str) -> list[DownloadResult]:
-        # Fetch-level failures (InvalidUrlError / ProviderApiError) are fatal for the
-        # whole run: they propagate out so the CLI can show one clean error.
+    def run(
+        self,
+        url: str,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> list[DownloadResult]:
+        # Fetch-level failures (InvalidUrlError / ProviderApiError) are fatal for the whole run:
+        # they propagate so the CLI can show one clean error. fetch() runs sequentially here, so
+        # the MusicBrainz handler's ~1 req/s limiter is unaffected by the pool below.
         tracks = self.handler.fetch(url)
-        return [self._process(track) for track in tracks]
+        if not tracks:
+            return []
+
+        # Phase 6: download tracks concurrently. Per-track isolation lives in _process
+        # (except Exception -> FAILED), so a worker never aborts the batch. Results are collected
+        # by index and returned in INPUT order (not completion order) for a stable summary.
+        # ``on_progress(done, total)`` is invoked here on the main thread as each future
+        # completes, so there are no cross-thread UI calls.
+        total = len(tracks)
+        by_index: dict[int, DownloadResult] = {}
+        pool = ThreadPoolExecutor(max_workers=self.max_workers)
+        try:
+            future_to_index = {
+                pool.submit(self._process, track): idx for idx, track in enumerate(tracks)
+            }
+            for future in as_completed(future_to_index):
+                by_index[future_to_index[future]] = future.result()
+                if on_progress is not None:
+                    on_progress(len(by_index), total)
+        except BaseException:
+            # Ctrl-C (KeyboardInterrupt) or any fatal error: cancel PENDING work and propagate.
+            # KeyboardInterrupt is a BaseException, so _process's per-track `except Exception`
+            # never swallows it as a FAILED result — it surfaces here and aborts the run.
+            # Already-running workers can't be force-stopped; they finish their current step.
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            pool.shutdown(wait=True)
+
+        return [by_index[idx] for idx in range(total)]
 
     def _process(self, track: Track) -> DownloadResult:
         try:
+            # Stagger workers so N threads don't hit YouTube at the same instant (anti-bot).
+            time.sleep(random.uniform(_JITTER_MIN_S, _JITTER_MAX_S))
             candidates = self.ranker(track, self.ydl)
             if not candidates:
                 return DownloadResult(
