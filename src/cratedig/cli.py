@@ -115,7 +115,11 @@ def download(
             ranker=rank_candidates,
             lyrics_fetcher=None if no_lyrics else fetch_lyrics,
             tagger=Tagger(),
-            ydl=YoutubeDL({"quiet": True, "no_warnings": True}),
+            # ignoreerrors=True so an unavailable video in the ytsearch results becomes a None
+            # entry (skipped by the matcher) instead of throwing in extract_info and killing the
+            # whole track before any candidate exists. The downloader keeps ignoreerrors OFF so
+            # real download failures still raise and the per-candidate fallback can advance.
+            ydl=YoutubeDL({"quiet": True, "no_warnings": True, "ignoreerrors": True}),
             max_workers=settings.max_workers,
         )
         with console.status("[bold]Fetching metadata and downloading…"):
