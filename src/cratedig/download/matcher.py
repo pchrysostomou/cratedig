@@ -3,17 +3,19 @@
 """YouTube matcher (Phase 2) — normalize, score, pick the best candidate.
 
 Given a Track and an already-constructed yt-dlp ``YoutubeDL`` instance, search
-YouTube and return the watch URL of the best-matching video, or ``None`` if
-nothing acceptable is found. This is the accuracy-critical module; see DESIGN.md §6.
+YouTube and return the watch URL(s) of the best-matching video(s). This is the
+accuracy-critical module; see DESIGN.md §6.
 
-``find_best_match`` never raises on "no match" — it returns ``None`` (the
-orchestrator translates ``None`` -> ``MatchNotFoundError`` in Phase 5).
+``rank_candidates`` returns best-first watch URLs (``[]`` if nothing is acceptable);
+``find_best_match`` returns the single best URL or ``None``. Neither raises on "no
+match" — the orchestrator maps an empty ranking to a NOT_FOUND result.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import statistics
 
 from rapidfuzz import fuzz
 
@@ -24,19 +26,32 @@ logger = logging.getLogger(__name__)
 # -- tunable knobs (see DESIGN.md open question #3) -------------------------
 
 SEARCH_RESULTS = 5  # how many YouTube results to request (ytsearchN)
-# Duration is a SOFT signal, not a hard gate: only candidates beyond this wide cutoff are
-# disqualified (clearly different tracks). Within it, duration is a graded nudge — real official
-# uploads run ~30s long (intros/outros), so the gate must not reject them.
-DURATION_HARD_CUTOFF_S = 60.0
 
-# Title is the dominant signal; duration is a secondary, graded nudge (full at delta=0, ~0 near
-# the cutoff). Kept small so a good title+channel match can outweigh a ~30s duration difference.
-WEIGHT_DURATION = 15.0
+# Duration is NOT a gate. MusicBrainz often reports the length of a different edition than the
+# one on YouTube (e.g. "Lose Yourself": MB ~249s, every real upload ~320-328s), so a delta vs the
+# MB target must never disqualify a candidate. It only earns a small POSITIVE closeness bonus that
+# decays to 0 by this many seconds past the target — a tie-break nudge, never a penalty.
+DURATION_BONUS_FALLOFF_S = 90.0
+
+# Outlier guard (no MusicBrainz): reject candidates whose length is wildly LONGER than the MEDIAN
+# length of the non-variant candidates — YouTube's own cluster reveals the canonical length, and
+# the junk we must drop (hour-long loops, "Best of" compilations, medleys) is always LONGER.
+# Only the HIGH side is rejected on purpose: the real track is the shorter one, so a low-side
+# cutoff would drop it whenever long junk skews the median past it (a too-short candidate is
+# already disfavored by the positive duration bonus). Accepted trade-off: a legitimate >2x edition
+# (e.g. a 7-min album cut among 3-min radio cuts) is also dropped. Applied only with
+# >= MIN_CLUSTER_FOR_GUARD non-variant candidates; with 1-2 results the median is unreliable and
+# could reject the only correct video, so the guard is skipped below that count.
+MEDIAN_OUTLIER_HIGH = 2.0  # > 2x the cluster median -> reject (long junk)
+MIN_CLUSTER_FOR_GUARD = 3
+
+# Title is the dominant signal; the duration bonus is a small nudge on top.
+WEIGHT_DURATION = 15.0  # max duration closeness bonus (at delta=0)
 WEIGHT_TITLE = 40.0
 ARTIST_BONUS = 15.0
 TOPIC_CHANNEL_BONUS = 10.0
 OFFICIAL_CHANNEL_BONUS = 5.0
-MIN_SCORE = 50.0  # floor: reject weak matches (e.g. a duration-only coincidence)
+MIN_SCORE = 50.0  # floor: reject weak matches (title similarity must carry real weight)
 
 # A candidate whose title advertises one of these variants is DISQUALIFIED unless
 # the Spotify track title itself contains the same term. Matched as a whitespace-
@@ -79,72 +94,57 @@ def _channel_of(entry: dict) -> str:
     return ""
 
 
-def _score(track: Track, entry: dict) -> float | None:
-    """Score a candidate, or return ``None`` if it is disqualified.
+def _duration_of(entry: dict) -> float | None:
+    """The candidate's duration in seconds, or ``None`` if missing/non-numeric."""
+    value = entry.get("duration")
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
-    Disqualifiers (hard, like a gate): missing/out-of-tolerance duration, or an
-    unrequested live/cover/remix/... variant the Spotify title does not share.
-    """
-    title = entry.get("title")
-    channel = _channel_of(entry)
-    target = track.duration_ms / 1000  # seconds
-    duration = entry.get("duration")
 
-    if target > 0:
-        # Reference duration known: duration is a SOFT signal — only a delta beyond the wide
-        # hard cutoff disqualifies; within it, it contributes a graded (not gating) score.
-        if not isinstance(duration, (int, float)):  # missing or non-numeric -> disqualify
-            logger.info("candidate %r [%s]: no duration -> reject:no-duration", title, channel)
-            return None
-        delta = abs(duration - target)
-        if delta > DURATION_HARD_CUTOFF_S:
-            logger.info(
-                "candidate %r [%s]: dur=%.0fs target=%.0fs delta=%.0fs > %.0fs -> reject:duration",
-                title,
-                channel,
-                duration,
-                target,
-                delta,
-                DURATION_HARD_CUTOFF_S,
-            )
-            return None
-        duration_component = WEIGHT_DURATION * max(0.0, 1 - delta / DURATION_HARD_CUTOFF_S)
-        dur_log = f"dur={duration:.0f}s delta={delta:.0f}s dur_pts={duration_component:.1f}"
-    else:
-        # No reference duration (MusicBrainz returned no length): skip the gate entirely — never
-        # reject on duration without a reference — and let title/artist/channel decide. Duration
-        # contributes nothing (neutral) so a good non-duration match can still win.
-        logger.info("candidate %r [%s]: duration gate skipped (unknown target)", title, channel)
-        duration_component = 0.0
-        dur_log = (
-            f"dur={duration:.0f}s (target unknown)"
-            if isinstance(duration, (int, float))
-            else "dur=? (target unknown)"
-        )
-
+def _is_variant_mismatch(track: Track, entry: dict) -> bool:
+    """True if the candidate advertises a live/cover/remix/... the track title does not share."""
     raw_title = entry.get("title")
     entry_title = raw_title if isinstance(raw_title, str) else ""
-
-    # Variant gate: an unrequested live/cover/remix/8d/... is never the right track.
     entry_variants = _variant_tokens(entry_title)
     track_variants = _variant_tokens(track.title)
     for word in VARIANT_WORDS:
         phrase = f" {word} "
         if phrase in entry_variants and phrase not in track_variants:
-            logger.info(
-                "candidate %r [%s]: %s variant %r -> reject:variant",
-                title,
-                channel,
-                dur_log,
-                word,
-            )
-            return None
+            return True
+    return False
 
-    score = duration_component
+
+def _duration_bonus(track: Track, entry: dict) -> float:
+    """Positive-only closeness bonus vs the MB target (0 if unknown target / no duration).
+
+    Never negative, never disqualifying — full ``WEIGHT_DURATION`` at delta=0, decaying linearly
+    to 0 by ``DURATION_BONUS_FALLOFF_S``. MB duration is unreliable, so this is a nudge only.
+    """
+    target = track.duration_ms / 1000
+    duration = _duration_of(entry)
+    if target <= 0 or duration is None:
+        return 0.0
+    delta = abs(duration - target)
+    return WEIGHT_DURATION * max(0.0, 1 - delta / DURATION_BONUS_FALLOFF_S)
+
+
+def _score(track: Track, entry: dict) -> float | None:
+    """Score a candidate (higher is better), or ``None`` if it is a disqualified variant.
+
+    The ONLY hard disqualifier here is an unrequested variant. Duration contributes a
+    positive-only bonus and never rejects; the candidate-cluster outlier guard lives in
+    :func:`rank_candidates`, which also logs the variant rejection reason.
+    """
+    if _is_variant_mismatch(track, entry):
+        return None
+
+    channel = _channel_of(entry)
+    raw_title = entry.get("title")
+    entry_title = raw_title if isinstance(raw_title, str) else ""
 
     norm_track_title = _normalize(track.title)
     norm_entry_title = _normalize(entry_title)
-    score += WEIGHT_TITLE * (fuzz.token_set_ratio(norm_track_title, norm_entry_title) / 100)
+    title_points = WEIGHT_TITLE * (fuzz.token_set_ratio(norm_track_title, norm_entry_title) / 100)
+    score = title_points
 
     haystack = f" {norm_entry_title} {_normalize(channel)} "
     norm_artists = [a for a in (_normalize(x) for x in track.artists) if a]
@@ -158,36 +158,88 @@ def _score(track: Track, entry: dict) -> float | None:
     elif "official" in channel_lower:
         score += OFFICIAL_CHANNEL_BONUS
 
+    dur_bonus = _duration_bonus(track, entry)
+    score += dur_bonus
+
+    duration = _duration_of(entry)
+    dur_log = f"dur={duration:.0f}s" if duration is not None else "dur=?"
     logger.info(
-        "candidate %r [%s]: %s -> score %.1f",
-        title,
+        "candidate %r [%s]: %s dur_bonus=%.1f title=%.0f -> score %.1f",
+        entry.get("title"),
         channel,
         dur_log,
+        dur_bonus,
+        title_points,
         score,
     )
     return score
 
 
 def rank_candidates(track: Track, ydl) -> list[str]:
-    """Search YouTube via ``ydl`` and return non-disqualified candidates (score >= MIN_SCORE)
-    as watch URLs, best-first. Deterministic: ties break by video id so the same query always
-    yields the same order. The orchestrator tries these in order, falling back on the next."""
+    """Search YouTube via ``ydl`` and return acceptable candidates (score >= MIN_SCORE) as watch
+    URLs, best-first. Deterministic: ties break by video id. The orchestrator tries these in
+    order, falling back on the next if a download fails."""
     query = track.search_query
-    target = track.duration_ms / 1000  # seconds
+    target = track.duration_ms / 1000
     search = f"ytsearch{SEARCH_RESULTS}:{query}"
-    logger.info("YouTube search: %s (target duration %.0fs)", search, target)
+    if target > 0:
+        logger.info("YouTube search: %s (target duration %.0fs)", search, target)
+    else:
+        logger.info("YouTube search: %s (target duration unknown)", search)
 
     result = ydl.extract_info(search, download=False)
+    if not result:
+        # ignoreerrors=True can turn a TOTAL search failure (network/block/rate-limit) into a None
+        # result; surface it as a WARNING so it is not silently read as a plain "no match".
+        logger.warning(
+            "YouTube search returned no result for %r (unavailable or transient error)", query
+        )
     entries = (result or {}).get("entries") or []
     logger.info("ytsearch returned %d candidate(s) for %r", len(entries), query)
+    entries = [e for e in entries if isinstance(e, dict) and e.get("id")]
+
+    # Self-calibrating outlier guard: the canonical length is the MEDIAN duration of the
+    # non-variant candidates (YouTube's own cluster, not MusicBrainz). Only trust it with a real
+    # cluster — with 1-2 candidates the median is unreliable and could reject the only correct one.
+    cluster = [
+        d
+        for e in entries
+        if not _is_variant_mismatch(track, e) and (d := _duration_of(e)) is not None and d > 0
+    ]
+    median = statistics.median(cluster) if len(cluster) >= MIN_CLUSTER_FOR_GUARD else None
+    if median is not None:
+        logger.info(
+            "candidate cluster median duration %.0fs (n=%d); reject > %.0fs",
+            median,
+            len(cluster),
+            MEDIAN_OUTLIER_HIGH * median,
+        )
+    else:
+        logger.info(
+            "cluster guard skipped (%d non-variant candidate(s) with duration < %d)",
+            len(cluster),
+            MIN_CLUSTER_FOR_GUARD,
+        )
 
     scored: list[tuple[float, str]] = []
     for entry in entries:
-        if not entry or not entry.get("id"):
-            logger.info("candidate skipped: missing video id")
+        if _is_variant_mismatch(track, entry):  # checked first so the log reason is accurate
+            logger.info(
+                "candidate %r [%s]: -> reject:variant", entry.get("title"), _channel_of(entry)
+            )
             continue
-        score = _score(track, entry)  # logs the gate reason for rejected candidates
-        if score is None:
+        duration = _duration_of(entry)
+        if median is not None and duration is not None and duration > MEDIAN_OUTLIER_HIGH * median:
+            logger.info(
+                "candidate %r: dur=%.0fs > %.1fx cluster median %.0fs -> reject:outlier",
+                entry.get("title"),
+                duration,
+                MEDIAN_OUTLIER_HIGH,
+                median,
+            )
+            continue
+        score = _score(track, entry)  # logs the scored line
+        if score is None:  # safety: variants already filtered above
             continue
         if score < MIN_SCORE:
             logger.info(

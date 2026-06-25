@@ -7,7 +7,6 @@ import logging
 import pytest
 
 from cratedig.download.matcher import (
-    DURATION_HARD_CUTOFF_S,
     MIN_SCORE,
     SEARCH_RESULTS,
     _normalize,
@@ -68,25 +67,15 @@ def test_uses_search_query_and_disables_download():
     assert ydl.calls == [(f"ytsearch{SEARCH_RESULTS}:Artist A - Song", False)]
 
 
-# -- duration gate ----------------------------------------------------------
+# -- duration as a closeness bonus (not a gate) -----------------------------
 
 
 def test_duration_is_decisive_between_same_title():
     track = _track(duration_ms=200_000)
     correct = _entry("right", "Artist A - Song", 200, "Artist A - Topic")
-    wrong = _entry("off", "Artist A - Song", 207, "Artist A - Topic")  # 7s off, still in tol
+    wrong = _entry("off", "Artist A - Song", 207, "Artist A - Topic")  # 7s off -> smaller bonus
     result = find_best_match(track, FakeYDL([wrong, correct]))
-    assert result == _url("right")
-
-
-def test_returns_none_when_all_beyond_cutoff():
-    track = _track(duration_ms=200_000)
-    over = DURATION_HARD_CUTOFF_S + 5
-    entries = [
-        _entry("a", "Artist A - Song", 200 - over),
-        _entry("b", "Artist A - Song", 200 + over),
-    ]
-    assert find_best_match(track, FakeYDL(entries)) is None
+    assert result == _url("right")  # closer duration earns the bigger bonus
 
 
 # -- normalization ----------------------------------------------------------
@@ -199,14 +188,16 @@ def test_malformed_entries_do_not_raise():
     track = _track()
     good = _entry("good", "Artist A - Song", 200, "Artist A - Topic")
     malformed = [
-        {"id": "a", "title": 123, "duration": 200},  # non-str title
+        {"id": "a", "title": 123, "duration": 200},  # non-str title -> no title signal
         {"id": "b", "title": "Artist A - Song", "duration": "200"},  # non-numeric duration
         {"id": "c", "title": "Artist A - Song", "duration": 200, "channel": 999},  # non-str chan
     ]
     # never raises; the well-formed candidate still wins
     assert find_best_match(track, FakeYDL([*malformed, good])) == _url("good")
-    # entries that are malformed where it matters (title/duration) yield no match
-    assert find_best_match(track, FakeYDL(malformed[:2])) is None
+    # a non-str TITLE leaves no signal -> below the floor -> no match
+    assert find_best_match(track, FakeYDL([malformed[0]])) is None
+    # but a good title with a bad/missing duration is now ACCEPTED (duration is a bonus, not a gate)
+    assert find_best_match(track, FakeYDL([malformed[1]])) == _url("b")
 
 
 def test_short_artist_name_not_matched_inside_word():
@@ -228,14 +219,16 @@ def test_normalize():
     assert _normalize("") == ""
 
 
-def test_score_duration_gate_and_ordering():
+def test_score_duration_is_positive_bonus_only():
     track = _track(duration_ms=200_000)
     close = _score(track, _entry("a", "Artist A - Song", 200, "Artist A - Topic"))
     far = _score(track, _entry("a", "Artist A - Song", 208, "Artist A - Topic"))
-    assert close is not None and far is not None
-    assert close > far  # closer duration scores higher
-    assert _score(track, _entry("a", "Artist A - Song", 280)) is None  # delta 80 > 60 cutoff
-    assert _score(track, {"id": "a", "title": "Artist A - Song"}) is None  # missing duration
+    way_off = _score(track, _entry("a", "Artist A - Song", 280, "Artist A - Topic"))  # delta 80
+    no_dur = _score(track, {"id": "a", "title": "Artist A - Song", "channel": "Artist A - Topic"})
+    # never rejected for duration; closer just scores higher; missing duration is neutral (0 bonus)
+    assert None not in (close, far, way_off, no_dur)
+    assert close > far > way_off  # graded closeness bonus, never disqualifying
+    assert way_off > no_dur  # a delta-80 still earns a small bonus over no duration at all
 
 
 def test_score_variant_disqualifies_unless_requested():
@@ -249,11 +242,13 @@ def test_score_variant_disqualifies_unless_requested():
 
 
 def test_diagnostic_logging_reveals_decision(caplog):
-    track = _track(title="Song", duration_ms=200_000)  # target 200s
+    track = _track(title="Song", artists=("Artist A",), duration_ms=200_000)  # target 200s
     ydl = FakeYDL(
         [
             _entry("ok", "Artist A - Song", 200, "Artist A - Topic"),  # delta 0 -> chosen
-            _entry("toolong", "Artist A - Song", 400, "Artist A - Topic"),  # delta 200 -> gated
+            _entry("b", "Artist A - Song", 205, "Artist A - Topic"),
+            _entry("c", "Artist A - Song", 210, "Artist A - Topic"),
+            _entry("loop", "Artist A - Song", 900, "Artist A - Topic"),  # cluster outlier
         ]
     )
 
@@ -264,17 +259,18 @@ def test_diagnostic_logging_reveals_decision(caplog):
     # search query + target duration are logged
     assert "ytsearch5:Artist A - Song" in text
     assert "target duration 200s" in text
-    # the out-of-tolerance candidate logs its duration, delta, and the gate reason
-    assert "dur=400s" in text and "delta=200s" in text and "reject:duration" in text
-    # the final decision is logged
+    # the self-calibrating cluster guard ran and shows the closeness bonus per candidate
+    assert "candidate cluster median" in text
+    assert "dur_bonus=" in text
+    # the 900s loop is rejected by the cluster guard, and the final decision is logged
+    assert "reject:outlier" in text
     assert f"match {_url('ok')}" in text
-    # behavior is unchanged: the correct candidate is still returned
-    assert result == _url("ok")
+    assert result == _url("ok")  # delta 0 -> biggest closeness bonus -> chosen
 
 
 def test_diagnostic_logging_reports_no_match(caplog):
-    track = _track(title="Song", duration_ms=200_000)
-    ydl = FakeYDL([_entry("x", "Artist A - Song", 400, "Artist A - Topic")])  # all out of tolerance
+    track = _track(title="Song", artists=("Artist A",), duration_ms=200_000)
+    ydl = FakeYDL([_entry("x", "Totally Unrelated", 200, "")])  # weak title, no artist/channel
 
     with caplog.at_level(logging.INFO, logger="cratedig.download.matcher"):
         result = find_best_match(track, ydl)
@@ -299,7 +295,7 @@ def test_unknown_target_skips_gate_and_good_match_clears_threshold(caplog):
         result = find_best_match(track, FakeYDL([entry]))
 
     assert result == _url("gl")  # not rejected for duration; chosen on title/artist/channel
-    assert "duration gate skipped (unknown target)" in caplog.text
+    assert "target duration unknown" in caplog.text
 
 
 def test_unknown_target_still_rejects_weak_match():
@@ -309,35 +305,27 @@ def test_unknown_target_still_rejects_weak_match():
     assert find_best_match(track, FakeYDL([entry])) is None
 
 
-# -- wide (60s) soft-duration cutoff ----------------------------------------
+# -- duration no longer gates (FIX A: bonus only, no MB-anchored cutoff) -----
 
 
-def test_delta_13_within_cutoff_accepted():
+def test_delta_13_lone_candidate_accepted():
     track = _track(title="Song", duration_ms=200_000)
     entry = _entry("ok", "Artist A - Song", 213, "Artist A - Topic")  # delta 13s
     assert find_best_match(track, FakeYDL([entry])) == _url("ok")
 
 
-def test_delta_39_now_accepted():
-    # The real bug: a ~39s-off official upload (intro/outro) was rejected by the old +-20s gate;
-    # within the 60s soft cutoff it now survives and, as the only candidate, is returned.
+def test_delta_39_lone_candidate_accepted():
     track = _track(title="Song", duration_ms=200_000)
     entry = _entry("ok", "Artist A - Song", 239, "Artist A - Topic")  # delta 39s
     assert find_best_match(track, FakeYDL([entry])) == _url("ok")
 
 
-def test_delta_beyond_cutoff_rejected():
+def test_large_delta_lone_candidate_no_longer_rejected():
+    # The old +-60s gate rejected this; with duration a bonus (and no cluster to outlier
+    # against), the only correct upload survives even when MB's duration is from another edition.
     track = _track(title="Song", duration_ms=200_000)
-    entry = _entry("far", "Artist A - Song", 270, "Artist A - Topic")  # delta 70s > 60
-    assert find_best_match(track, FakeYDL([entry])) is None
-
-
-def test_cutoff_boundary_inclusive_at_60s():
-    track = _track(title="Song", duration_ms=200_000)
-    at = _entry("at", "Artist A - Song", 260, "Artist A - Topic")  # delta 60s -> accepted
-    over = _entry("over", "Artist A - Song", 261, "Artist A - Topic")  # delta 61s -> rejected
-    assert find_best_match(track, FakeYDL([at])) == _url("at")
-    assert find_best_match(track, FakeYDL([over])) is None
+    entry = _entry("far", "Artist A - Song", 270, "Artist A - Topic")  # delta 70s
+    assert find_best_match(track, FakeYDL([entry])) == _url("far")
 
 
 # -- soft-duration ranking + rank_candidates --------------------------------
