@@ -15,6 +15,9 @@ wheels/
 # Downloaded audio (default output dir)
 downloads/
 
+# Ad-hoc local smoke-test output dirs (manual `crate` runs)
+t2/
+
 # Virtual environments
 .venv/
 venv/
