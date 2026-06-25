@@ -161,6 +161,23 @@ def test_progress_callback_passed_and_advances(wired):
     assert "2 downloaded" in result.output
 
 
+def test_setup_logging_uses_shared_cli_console(mocker, tmp_path):
+    # The Rich logging handler must share the CLI console so worker-thread logs serialize with
+    # the live progress bar instead of corrupting it.
+    setup = mocker.patch.object(cli, "setup_logging")
+    mocker.patch.object(cli, "get_settings", return_value=Settings(output_dir=tmp_path))
+    mocker.patch.object(cli, "MusicBrainzHandler")
+    mocker.patch.object(cli, "YouTubeDownloader")
+    mocker.patch.object(cli, "Tagger")
+    mocker.patch.object(cli, "YoutubeDL")
+    orch = mocker.patch.object(cli, "Orchestrator")
+    orch.return_value.run.return_value = []
+
+    runner.invoke(app, ["download", "x"])
+
+    assert setup.call_args.kwargs["console"] is cli.console
+
+
 def test_progress_total_none_until_first_completion_is_safe(wired):
     # Before any track completes the bar is indeterminate (total=None); never calling on_progress
     # must not crash, the transient bar must leave no residue, and the summary still prints.
