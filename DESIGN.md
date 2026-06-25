@@ -309,11 +309,26 @@ Download is I/O- and subprocess-bound, so **`ThreadPoolExecutor`** is correct (n
 
 ## 10. Packaging & distribution (Windows + GitHub)
 
-- **FFmpeg** is an external binary, not pip. Dev: `winget install Gyan.FFmpeg`. `.exe`: bundle `ffmpeg.exe` or detect-and-instruct. Without it, audio conversion silently fails.
+- **FFmpeg** is an external binary, not pip. Both the pip install and the `.exe` require it on `PATH` — **install it separately; do NOT bundle it.** Dev/users: `winget install Gyan.FFmpeg` (then reopen the terminal). Rationale: FFmpeg is large (~100 MB) and its GPL/LGPL redistribution would make *this project* responsible for shipping it; users already install it for the pip path; and the downloader resolves it via `shutil.which("ffmpeg")`, so the exe finds it on `PATH` through the identical code path. Without it the proactive guard raises a clear "FFmpeg is required" error.
 - **Primary distribution: `pipx install git+https://github.com/<you>/cratedig.git`** (isolated; devs don't need an `.exe`).
 - **`.exe` for non-devs:** PyInstaller with **`--onedir`** (not `--onefile`). `--onefile` extracts to Temp at runtime and is far more likely to be flagged by **Windows Defender** as a false-positive Trojan. Document an AV-exclusion note and submit a false-positive report to Microsoft. (Code signing needs a paid EV cert — skip for v1.)
 - Entry point: `[project.scripts]  crate = "cratedig.cli:app"`.
 - **GitHub Actions:** `ci.yml` (ruff + pytest on push/PR), `release.yml` (build `.exe`, attach to Release on `v*` tag).
+
+**Building the standalone `.exe` (onedir).** From the repo root, with the dev extras installed:
+
+```powershell
+pip install -e ".[dev]"
+pyinstaller cratedig.spec --clean --noconfirm
+```
+
+The build config is the committed **`cratedig.spec`** (analysis entry: `packaging/cratedig_entry.py`,
+which runs the same Typer app behind `crate` — no `src/` logic involved). Output is
+**`dist/cratedig/`** — a folder containing `cratedig.exe` plus its dependencies; **zip that folder**
+and attach it to a GitHub Release. `yt-dlp`'s lazily-imported extractors and `certifi`'s CA bundle
+are pulled in via `collect_all`; UPX is disabled and `--onedir` is used to minimize Windows
+Defender false positives. The build output (`build/`, `dist/`, `*.exe`) is gitignored and must
+never be committed — the exe is a release artifact only.
 
 ---
 

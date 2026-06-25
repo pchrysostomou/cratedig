@@ -55,11 +55,38 @@ pip install -e ".[dev]"
 
 ## Standalone executable (Windows)
 
-> **Coming soon.** A prebuilt `crate.exe` will be published on the
-> [GitHub Releases](https://github.com/pchrysostomou/cratedig/releases) page so you can run
-> cratedig without installing Python. The download/run instructions (folder layout, bundling
-> FFmpeg, the Windows Defender note) will be documented here once the build lands.
-> _(TODO: PyInstaller build + release docs — tracked as a later task.)_
+No Python? Grab the prebuilt Windows build from the
+[GitHub Releases](https://github.com/pchrysostomou/cratedig/releases) page.
+
+1. **Download and extract the whole folder.** The release asset is a zipped `cratedig` folder;
+   extract it somewhere like `C:\Tools\cratedig` and keep it intact — `cratedig.exe` needs the
+   files next to it (it's a folder build, not a single file).
+2. **Install FFmpeg** and make sure it's on your `PATH` — it is *not* bundled in the exe:
+
+   ```powershell
+   winget install Gyan.FFmpeg
+   ```
+
+   Then **reopen your terminal** (verify with `ffmpeg -version`).
+3. **Open PowerShell or Command Prompt in the extracted folder** and run it like the `crate`
+   command — every flag works identically (same code path):
+
+   ```powershell
+   .\cratedig.exe download "Daft Punk - Get Lucky"
+   .\cratedig.exe download "Artist - Title" --cookies-from-browser firefox
+   .\cratedig.exe --help
+   ```
+
+**Windows Defender / antivirus note.** PyInstaller executables are a well-known source of
+*false-positive* antivirus flags — there is nothing malicious in cratedig (it's open source,
+GPL-3.0, and you can build the exe yourself from source; see [`DESIGN.md`](DESIGN.md) §10). This
+build uses **`--onedir`** specifically because it is far less likely to be flagged than a
+single-file exe. If Defender still quarantines it: open **Windows Security → Virus & threat
+protection → Protection history**, find the cratedig detection, and choose **Allow** /
+**Restore** — or add the folder under **Manage settings → Exclusions**.
+
+**Anti-bot 403s.** Same as the Python usage: if a track fails with `403 Forbidden`, add
+`--cookies-from-browser firefox` (Firefox recommended; see the note above).
 
 ## Usage
 
