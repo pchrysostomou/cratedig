@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Prodromos Chrysostomou" },
 ]
-keywords = ["musicbrainz", "youtube", "music", "download", "cli", "lyrics", "id3"]
+keywords = ["musicbrainz", "youtube", "music", "download", "cli", "lyrics", "id3", "metadata"]
 # NOTE: No "License ::" trove classifier is listed. Under PEP 639, setuptools >=77
 # rejects combining a SPDX license expression (above) with a license classifier.
 classifiers = [
@@ -39,6 +39,11 @@ dependencies = [
     "requests>=2.31",
     "rapidfuzz>=3.9",
 ]
+
+[project.urls]
+Homepage = "https://github.com/pchrysostomou/cratedig"
+Repository = "https://github.com/pchrysostomou/cratedig"
+Issues = "https://github.com/pchrysostomou/cratedig/issues"
 
 [project.optional-dependencies]
 dev = [
