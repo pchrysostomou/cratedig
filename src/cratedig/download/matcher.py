@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # -- tunable knobs (see DESIGN.md open question #3) -------------------------
 
 SEARCH_RESULTS = 5  # how many YouTube results to request (ytsearchN)
-DURATION_TOLERANCE_S = 10.0  # reject candidates farther than this from the track
+DURATION_TOLERANCE_S = 20.0  # reject candidates farther than this; real uploads have intros/outros
 
 # Duration is the heaviest signal: a strictly larger additive weight AND a hard gate.
 WEIGHT_DURATION = 45.0
