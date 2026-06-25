@@ -16,12 +16,15 @@ wheels/
 downloads/
 
 # Ad-hoc local smoke-test output dirs (manual `crate` runs). These hold REAL downloaded
-# audio and must NEVER be committed/pushed to a public repo (copyright). Keep this list broad.
+# audio and must NEVER be committed/pushed to a public repo (copyright). Keep this list broad:
+# the *_test/ glob catches any future smoke dir (use `git add -f` if you ever need a real one).
 t2/
 album_test/
+exe_test/
+*_test/
 
-# Safety net: never commit downloaded audio, wherever it lands (this is a Python project; the
-# tests use plain-text stand-ins, not real audio files, so no legitimate audio lives in-tree).
+# Safety net: never commit downloaded audio or yt-dlp download intermediates, wherever they land
+# (this is a Python project; the tests use plain-text stand-ins, so no real audio lives in-tree).
 *.mp3
 *.m4a
 *.aac
@@ -29,6 +32,8 @@ album_test/
 *.opus
 *.ogg
 *.wav
+*.webm
+*.part
 
 # Virtual environments
 .venv/
