@@ -369,3 +369,97 @@ def test_rank_candidates_deterministic_tiebreak(order):
 
     # identical scores -> deterministic id-ascending order regardless of API result order
     assert ranked == [_url("aaa"), _url("bbb")]
+
+
+# -- FIX A: duration is a bonus, not an MB-anchored gate ---------------------
+
+
+def test_duration_off_official_now_chosen_was_rejected():
+    # The Eminem case: MB target 249s, but the real official upload runs 328s (79s off). The old
+    # +-60s gate rejected ALL real uploads; now duration is only a bonus and the upload wins.
+    track = _track(title="Lose Yourself", artists=("Eminem",), duration_ms=249_000)
+    official = _entry("official", "Eminem - Lose Yourself", 328, "Eminem - Topic")  # 79s off MB
+    assert find_best_match(track, FakeYDL([official])) == _url("official")
+
+
+def test_duration_is_bonus_only_not_a_gate():
+    # With a real cluster present, a candidate far from the MB target is still NOT rejected as long
+    # as it's within the cluster band; duration only changes the bonus (closer ranks higher).
+    track = _track(title="Song", artists=("Artist A",), duration_ms=200_000)  # MB target 200s
+    ydl = FakeYDL(
+        [
+            _entry("far", "Artist A - Song", 320, "Artist A - Topic"),  # 120s off MB, in-cluster
+            _entry("mid", "Artist A - Song", 260, "Artist A - Topic"),
+            _entry("close", "Artist A - Song", 205, "Artist A - Topic"),  # 5s off
+        ]
+    )
+
+    ranked = rank_candidates(track, ydl)
+
+    assert set(ranked) == {_url("close"), _url("mid"), _url("far")}  # none rejected for duration
+    assert ranked[0] == _url("close")  # closest to MB target earns the biggest bonus
+
+
+def test_cluster_median_guard_rejects_outliers():
+    # No MusicBrainz: the ~320s cluster is the canonical length; a 5718s "Best of" compilation and
+    # a 963s medley are >2x the candidate median and rejected, while the real cluster survives.
+    track = _track(title="Lose Yourself", artists=("Eminem",), duration_ms=249_000)
+    ydl = FakeYDL(
+        [
+            _entry("a", "Eminem - Lose Yourself", 320, "Eminem - Topic"),
+            _entry("b", "Eminem - Lose Yourself", 326, "EminemVEVO"),
+            _entry("c", "Eminem - Lose Yourself", 322, "Eminem Official"),
+            _entry("comp", "Best of Eminem", 5718, "FanChannel"),  # compilation
+            _entry("medley", "Eminem - Lose Yourself", 963, "FanChannel"),  # medley
+        ]
+    )
+
+    ranked = rank_candidates(track, ydl)
+
+    assert _url("comp") not in ranked and _url("medley") not in ranked  # guard caught both
+    assert _url("a") in ranked and _url("b") in ranked and _url("c") in ranked  # cluster kept
+
+
+def test_cluster_guard_keeps_real_track_when_long_junk_is_majority():
+    # Regression for the confirmed-major: 2 real ~320s uploads + 3 hour-long loops. The median
+    # sits ON the loops, but the guard rejects only the HIGH side, so the real (shorter) tracks
+    # are NOT rejected and win on the duration bonus + title; a 1-hour loop is never the top pick.
+    track = _track(title="Lose Yourself", artists=("Eminem",), duration_ms=249_000)
+    ydl = FakeYDL(
+        [
+            _entry("real1", "Eminem - Lose Yourself", 320, "Eminem - Topic"),
+            _entry("real2", "Eminem - Lose Yourself", 326, "EminemVEVO"),
+            _entry("loop1", "Eminem - Lose Yourself", 3600, "FanA"),
+            _entry("loop2", "Eminem - Lose Yourself", 3700, "FanB"),
+            _entry("loop3", "Eminem - Lose Yourself", 3800, "FanC"),
+        ]
+    )
+
+    ranked = rank_candidates(track, ydl)
+
+    assert _url("real1") in ranked and _url("real2") in ranked  # reals NOT rejected
+    assert ranked[0] in (_url("real1"), _url("real2"))  # a real upload wins, never a 1-hour loop
+
+
+def test_cluster_guard_skipped_with_fewer_than_three_candidates():
+    # Safety: with only 2 non-variant candidates the median isn't a reliable canonical length, so
+    # the guard MUST be skipped — else the correct 320s would be an outlier vs median 660 and get
+    # rejected. The correct upload must survive.
+    track = _track(title="Lose Yourself", artists=("Eminem",), duration_ms=249_000)
+    correct = _entry("correct", "Eminem - Lose Yourself", 320, "Eminem - Topic")
+    long_ver = _entry("long", "Eminem - Lose Yourself", 1000, "Eminem - Topic")  # extended cut
+    ranked = rank_candidates(track, FakeYDL([correct, long_ver]))
+
+    assert _url("correct") in ranked  # NOT rejected by a guard that should not have run
+    assert ranked[0] == _url("correct")  # and it still ranks first (closer to MB target)
+
+
+# -- FIX B: a dead video in the search results is skipped, not fatal ---------
+
+
+def test_dead_video_none_entry_skipped_and_survivor_chosen():
+    # ignoreerrors=True turns an unavailable video into a None entry; the matcher skips it and the
+    # surviving good candidate is still ranked and returned (the search no longer aborts).
+    track = _track(title="Get Lucky", artists=("Daft Punk",), duration_ms=248_000)
+    ydl = FakeYDL([None, _entry("good", "Daft Punk - Get Lucky", 248, "Daft Punk - Topic")])
+    assert find_best_match(track, ydl) == _url("good")

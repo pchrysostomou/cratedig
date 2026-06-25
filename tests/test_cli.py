@@ -138,3 +138,12 @@ def test_search_ydl_built_and_passed_to_orchestrator(wired):
     runner.invoke(app, ["download", "midnight city"])
     assert cli.YoutubeDL.called  # a dedicated search YoutubeDL is constructed
     assert wired.call_args.kwargs["ydl"] is cli.YoutubeDL.return_value
+
+
+def test_search_ydl_built_with_ignoreerrors(wired):
+    # The search YoutubeDL must skip dead videos (a bad top result must not abort the search),
+    # so it is built with ignoreerrors=True.
+    wired.return_value.run.return_value = []
+    runner.invoke(app, ["download", "midnight city"])
+    opts = cli.YoutubeDL.call_args.args[0]
+    assert opts["ignoreerrors"] is True
