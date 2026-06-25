@@ -65,25 +65,39 @@ class YouTubeDownloader:
         self.cookies_from_browser = cookies_from_browser
 
     def download(self, video_url: str, track: Track) -> str:
-        """Download + transcode ``video_url`` for ``track``; return the file path."""
+        """Download + transcode ``video_url`` for ``track``; return the file path.
+
+        Contract: this only ever raises ``DownloadError``. Every step — the idempotency
+        stat, mkdir, opts build, yt-dlp run and the output check — is inside one try, so any
+        filesystem/yt-dlp/FFmpeg failure is wrapped. That lets the orchestrator's per-candidate
+        ``except DownloadError`` always engage and fall back to the next candidate, instead of a
+        raw OSError escaping and aborting the track via the generic handler with no fallback.
+        """
         target = self.output_dir / _safe_filename(track, _output_ext(self.audio_format))
-
-        # Idempotency: an existing file is returned untouched (no yt-dlp, no FFmpeg).
-        if target.exists():
-            return str(target)
-
-        # Fail fast + clearly if FFmpeg is absent (the #1 gotcha, DESIGN.md §10),
-        # rather than letting yt-dlp surface a version-dependent stack trace.
-        if which("ffmpeg") is None:
-            raise DownloadError(_FFMPEG_MISSING_MSG)
-
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        opts = self._build_opts(target)
-
         try:
+            # Idempotency: an existing file is returned untouched (no yt-dlp, no FFmpeg).
+            if target.exists():
+                return str(target)
+
+            # Fail fast + clearly if FFmpeg is absent (the #1 gotcha, DESIGN.md §10),
+            # rather than letting yt-dlp surface a version-dependent stack trace.
+            if which("ffmpeg") is None:
+                raise DownloadError(_FFMPEG_MISSING_MSG)
+
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            opts = self._build_opts(target)
             with YoutubeDL(opts) as ydl:
                 ydl.download([video_url])
-        except Exception as exc:  # wrap ANY yt-dlp/FFmpeg/IO failure; never let it escape
+
+            if not target.exists():
+                raise DownloadError(
+                    f"Download reported success but produced no output for "
+                    f"{track.search_query!r} (expected {target})."
+                )
+            return str(target)
+        except DownloadError:
+            raise  # our own clean errors (FFmpeg missing / no output) pass through unwrapped
+        except Exception as exc:  # wrap ANY yt-dlp/FFmpeg/IO/setup failure; never let it escape
             text = str(exc).lower()
             # Fallback for the edge case where ffmpeg/ffprobe is reported missing despite
             # the proactive which() guard. Require a not-found phrasing so genuine transcode
@@ -94,13 +108,6 @@ class YouTubeDownloader:
             if binary_missing:
                 raise DownloadError(_FFMPEG_MISSING_MSG) from exc
             raise DownloadError(f"Failed to download {track.search_query!r}: {exc}") from exc
-
-        if not target.exists():
-            raise DownloadError(
-                f"Download reported success but produced no output for "
-                f"{track.search_query!r} (expected {target})."
-            )
-        return str(target)
 
     def _build_opts(self, target: Path) -> dict:
         # outtmpl has no hardcoded extension; yt-dlp fills %(ext)s and the
