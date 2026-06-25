@@ -65,6 +65,11 @@ CLAUDE.local.md
 # *.exe is a release artifact and must never be committed.
 *.exe
 
+# Release archives — the zipped onedir build attached to GitHub Releases (e.g.
+# cratedig-v0.1.0-windows.zip) is a large binary artifact and must NEVER be committed.
+*.zip
+*.7z
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
