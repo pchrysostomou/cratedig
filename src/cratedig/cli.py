@@ -103,7 +103,8 @@ def download(
     ] = False,
 ) -> None:
     """Download audio for a MusicBrainz release/recording, or the best search match."""
-    setup_logging(verbose)
+    # Share this module's console so worker-thread logs serialize with the live progress bar.
+    setup_logging(verbose, console=console)
     try:
         settings = get_settings(
             output_dir=output,
