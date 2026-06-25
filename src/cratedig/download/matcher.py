@@ -24,10 +24,14 @@ logger = logging.getLogger(__name__)
 # -- tunable knobs (see DESIGN.md open question #3) -------------------------
 
 SEARCH_RESULTS = 5  # how many YouTube results to request (ytsearchN)
-DURATION_TOLERANCE_S = 20.0  # reject candidates farther than this; real uploads have intros/outros
+# Duration is a SOFT signal, not a hard gate: only candidates beyond this wide cutoff are
+# disqualified (clearly different tracks). Within it, duration is a graded nudge — real official
+# uploads run ~30s long (intros/outros), so the gate must not reject them.
+DURATION_HARD_CUTOFF_S = 60.0
 
-# Duration is the heaviest signal: a strictly larger additive weight AND a hard gate.
-WEIGHT_DURATION = 45.0
+# Title is the dominant signal; duration is a secondary, graded nudge (full at delta=0, ~0 near
+# the cutoff). Kept small so a good title+channel match can outweigh a ~30s duration difference.
+WEIGHT_DURATION = 15.0
 WEIGHT_TITLE = 40.0
 ARTIST_BONUS = 15.0
 TOPIC_CHANNEL_BONUS = 10.0
@@ -87,12 +91,13 @@ def _score(track: Track, entry: dict) -> float | None:
     duration = entry.get("duration")
 
     if target > 0:
-        # Reference duration known: the duration gate is active.
+        # Reference duration known: duration is a SOFT signal — only a delta beyond the wide
+        # hard cutoff disqualifies; within it, it contributes a graded (not gating) score.
         if not isinstance(duration, (int, float)):  # missing or non-numeric -> disqualify
             logger.info("candidate %r [%s]: no duration -> reject:no-duration", title, channel)
             return None
         delta = abs(duration - target)
-        if delta > DURATION_TOLERANCE_S:
+        if delta > DURATION_HARD_CUTOFF_S:
             logger.info(
                 "candidate %r [%s]: dur=%.0fs target=%.0fs delta=%.0fs > %.0fs -> reject:duration",
                 title,
@@ -100,11 +105,11 @@ def _score(track: Track, entry: dict) -> float | None:
                 duration,
                 target,
                 delta,
-                DURATION_TOLERANCE_S,
+                DURATION_HARD_CUTOFF_S,
             )
             return None
-        duration_component = WEIGHT_DURATION * (1 - delta / DURATION_TOLERANCE_S)
-        dur_log = f"dur={duration:.0f}s delta={delta:.0f}s"
+        duration_component = WEIGHT_DURATION * max(0.0, 1 - delta / DURATION_HARD_CUTOFF_S)
+        dur_log = f"dur={duration:.0f}s delta={delta:.0f}s dur_pts={duration_component:.1f}"
     else:
         # No reference duration (MusicBrainz returned no length): skip the gate entirely — never
         # reject on duration without a reference — and let title/artist/channel decide. Duration

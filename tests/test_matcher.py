@@ -7,7 +7,7 @@ import logging
 import pytest
 
 from cratedig.download.matcher import (
-    DURATION_TOLERANCE_S,
+    DURATION_HARD_CUTOFF_S,
     MIN_SCORE,
     SEARCH_RESULTS,
     _normalize,
@@ -78,9 +78,9 @@ def test_duration_is_decisive_between_same_title():
     assert result == _url("right")
 
 
-def test_returns_none_when_all_outside_tolerance():
+def test_returns_none_when_all_beyond_cutoff():
     track = _track(duration_ms=200_000)
-    over = DURATION_TOLERANCE_S + 5
+    over = DURATION_HARD_CUTOFF_S + 5
     entries = [
         _entry("a", "Artist A - Song", 200 - over),
         _entry("b", "Artist A - Song", 200 + over),
@@ -233,7 +233,7 @@ def test_score_duration_gate_and_ordering():
     far = _score(track, _entry("a", "Artist A - Song", 208, "Artist A - Topic"))
     assert close is not None and far is not None
     assert close > far  # closer duration scores higher
-    assert _score(track, _entry("a", "Artist A - Song", 250)) is None  # out of tolerance
+    assert _score(track, _entry("a", "Artist A - Song", 280)) is None  # delta 80 > 60 cutoff
     assert _score(track, {"id": "a", "title": "Artist A - Song"}) is None  # missing duration
 
 
@@ -308,25 +308,32 @@ def test_unknown_target_still_rejects_weak_match():
     assert find_best_match(track, FakeYDL([entry])) is None
 
 
-# -- Bug B: wider (20s) tolerance -------------------------------------------
+# -- wide (60s) soft-duration cutoff ----------------------------------------
 
 
-def test_delta_13_now_accepted():
-    # Was rejected at +-10s; a real official upload 13s off is now within the 20s tolerance.
+def test_delta_13_within_cutoff_accepted():
     track = _track(title="Song", duration_ms=200_000)
     entry = _entry("ok", "Artist A - Song", 213, "Artist A - Topic")  # delta 13s
     assert find_best_match(track, FakeYDL([entry])) == _url("ok")
 
 
-def test_delta_39_still_rejected():
+def test_delta_39_now_accepted():
+    # The real bug: a ~39s-off official upload (intro/outro) was rejected by the old +-20s gate;
+    # within the 60s soft cutoff it now survives and, as the only candidate, is returned.
     track = _track(title="Song", duration_ms=200_000)
-    entry = _entry("far", "Artist A - Song", 239, "Artist A - Topic")  # delta 39s
+    entry = _entry("ok", "Artist A - Song", 239, "Artist A - Topic")  # delta 39s
+    assert find_best_match(track, FakeYDL([entry])) == _url("ok")
+
+
+def test_delta_beyond_cutoff_rejected():
+    track = _track(title="Song", duration_ms=200_000)
+    entry = _entry("far", "Artist A - Song", 270, "Artist A - Topic")  # delta 70s > 60
     assert find_best_match(track, FakeYDL([entry])) is None
 
 
-def test_tolerance_boundary_is_inclusive_at_20s():
+def test_cutoff_boundary_inclusive_at_60s():
     track = _track(title="Song", duration_ms=200_000)
-    at = _entry("at", "Artist A - Song", 220, "Artist A - Topic")  # delta 20s -> accepted
-    over = _entry("over", "Artist A - Song", 221, "Artist A - Topic")  # delta 21s -> rejected
+    at = _entry("at", "Artist A - Song", 260, "Artist A - Topic")  # delta 60s -> accepted
+    over = _entry("over", "Artist A - Song", 261, "Artist A - Topic")  # delta 61s -> rejected
     assert find_best_match(track, FakeYDL([at])) == _url("at")
     assert find_best_match(track, FakeYDL([over])) is None
