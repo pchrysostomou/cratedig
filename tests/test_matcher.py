@@ -13,6 +13,7 @@ from cratedig.download.matcher import (
     _normalize,
     _score,
     find_best_match,
+    rank_candidates,
 )
 from cratedig.models import Track
 
@@ -337,3 +338,46 @@ def test_cutoff_boundary_inclusive_at_60s():
     over = _entry("over", "Artist A - Song", 261, "Artist A - Topic")  # delta 61s -> rejected
     assert find_best_match(track, FakeYDL([at])) == _url("at")
     assert find_best_match(track, FakeYDL([over])) is None
+
+
+# -- soft-duration ranking + rank_candidates --------------------------------
+
+
+def test_soft_duration_official_beats_zero_off_competitor():
+    # The Eminem - Lose Yourself case: MB target 297s; the official upload runs ~31s longer.
+    # Soft duration keeps it alive and the channel bonus lets it beat a 0s-off competitor
+    # on a no-bonus channel.
+    track = _track(title="Lose Yourself", artists=("Eminem",), duration_ms=297_000)
+    official = _entry("official", "Eminem - Lose Yourself", 328, "Eminem - Topic")  # delta 31
+    other = _entry("other", "Eminem - Lose Yourself", 297, "LyricFind")  # delta 0, no bonus
+    assert find_best_match(track, FakeYDL([other, official])) == _url("official")
+
+
+def test_rank_candidates_orders_best_first_and_excludes_disqualified():
+    track = _track(title="Song", artists=("Artist A",), duration_ms=200_000)
+    ydl = FakeYDL(
+        [
+            _entry("random", "Artist A - Song", 200, "Rando"),  # 70
+            _entry("topic", "Artist A - Song", 200, "Artist A - Topic"),  # 80
+            _entry("live", "Artist A - Song (Live)", 200, "x"),  # variant -> excluded
+            _entry("official", "Artist A - Song", 200, "Artist A Official"),  # 75
+        ]
+    )
+
+    ranked = rank_candidates(track, ydl)
+
+    assert ranked == [_url("topic"), _url("official"), _url("random")]  # best-first, live dropped
+    assert find_best_match(track, ydl) == _url("topic")  # top of the ranking
+
+
+@pytest.mark.parametrize("order", [("aaa", "bbb"), ("bbb", "aaa")])
+def test_rank_candidates_deterministic_tiebreak(order):
+    track = _track(title="Song", artists=("Artist A",), duration_ms=200_000)
+    entries = {
+        rid: _entry(rid, "Artist A - Song", 200, "Artist A - Topic") for rid in ("aaa", "bbb")
+    }
+
+    ranked = rank_candidates(track, FakeYDL([entries[order[0]], entries[order[1]]]))
+
+    # identical scores -> deterministic id-ascending order regardless of API result order
+    assert ranked == [_url("aaa"), _url("bbb")]

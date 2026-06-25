@@ -39,14 +39,17 @@ class _FakeHandler:
 
 
 class _FakeDownloader:
-    def __init__(self, output_dir, audio_format="mp3", behavior="ok"):
+    def __init__(self, output_dir, audio_format="mp3", behavior="ok", fail_urls=()):
         self.output_dir = Path(output_dir)
         self.audio_format = audio_format
         self.behavior = behavior
+        self.fail_urls = set(fail_urls)  # URLs that raise DownloadError (fallback testing)
         self.calls = []
 
     def download(self, video_url, track):
         self.calls.append((video_url, track))
+        if video_url in self.fail_urls:
+            raise DownloadError(f"video not available: {video_url}")
         if self.behavior == "download_error":
             raise DownloadError("yt-dlp failed")
         if self.behavior == "boom":
@@ -306,3 +309,38 @@ def test_skip_path_matches_real_downloader_output(track, audio_format, tmp_path,
 
     orch = _orch(_FakeHandler([]), real_downloader)
     assert str(orch._expected_path(track)) == returned
+
+
+# -- download fallback across ranked candidates -----------------------------
+
+
+def test_falls_back_to_next_candidate_on_download_error(tmp_path):
+    downloader = _FakeDownloader(tmp_path, fail_urls={"u1"})
+    orch = _orch(_FakeHandler([_track()]), downloader, ranker=lambda t, y: ["u1", "u2"])
+
+    result = orch.run("u")[0]
+
+    assert result.status == ResultStatus.SUCCESS
+    assert result.youtube_url == "u2"  # the candidate that actually downloaded
+    assert [c[0] for c in downloader.calls] == ["u1", "u2"]  # u1 tried, then u2
+
+
+def test_all_candidates_fail_is_failed_with_last_error(tmp_path):
+    downloader = _FakeDownloader(tmp_path, fail_urls={"u1", "u2"})
+    orch = _orch(_FakeHandler([_track()]), downloader, ranker=lambda t, y: ["u1", "u2"])
+
+    result = orch.run("u")[0]
+
+    assert result.status == ResultStatus.FAILED
+    assert "u2" in result.error  # the LAST error is surfaced
+    assert result.youtube_url == "u1"  # the primary (best) pick
+
+
+def test_mid_list_success_stops_further_attempts(tmp_path):
+    downloader = _FakeDownloader(tmp_path, fail_urls={"u1"})
+    orch = _orch(_FakeHandler([_track()]), downloader, ranker=lambda t, y: ["u1", "u2", "u3"])
+
+    result = orch.run("u")[0]
+
+    assert result.status == ResultStatus.SUCCESS and result.youtube_url == "u2"
+    assert [c[0] for c in downloader.calls] == ["u1", "u2"]  # u3 never attempted
