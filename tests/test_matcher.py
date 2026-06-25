@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from cratedig.download.matcher import (
@@ -239,3 +241,41 @@ def test_score_variant_disqualifies_unless_requested():
     assert _score(track, _entry("a", "Artist A - Song (Live)", 200)) is None
     remix_track = _track(title="Song (Remix)", duration_ms=200_000)
     assert _score(remix_track, _entry("a", "Artist A - Song (Remix)", 200)) is not None
+
+
+# -- diagnostic logging (visible under --verbose / INFO) --------------------
+
+
+def test_diagnostic_logging_reveals_decision(caplog):
+    track = _track(title="Song", duration_ms=200_000)  # target 200s
+    ydl = FakeYDL(
+        [
+            _entry("ok", "Artist A - Song", 200, "Artist A - Topic"),  # delta 0 -> chosen
+            _entry("toolong", "Artist A - Song", 400, "Artist A - Topic"),  # delta 200 -> gated
+        ]
+    )
+
+    with caplog.at_level(logging.INFO, logger="cratedig.download.matcher"):
+        result = find_best_match(track, ydl)
+
+    text = caplog.text
+    # search query + target duration are logged
+    assert "ytsearch5:Artist A - Song" in text
+    assert "target duration 200s" in text
+    # the out-of-tolerance candidate logs its duration, delta, and the gate reason
+    assert "dur=400s" in text and "delta=200s" in text and "reject:duration" in text
+    # the final decision is logged
+    assert f"match {_url('ok')}" in text
+    # behavior is unchanged: the correct candidate is still returned
+    assert result == _url("ok")
+
+
+def test_diagnostic_logging_reports_no_match(caplog):
+    track = _track(title="Song", duration_ms=200_000)
+    ydl = FakeYDL([_entry("x", "Artist A - Song", 400, "Artist A - Topic")])  # all out of tolerance
+
+    with caplog.at_level(logging.INFO, logger="cratedig.download.matcher"):
+        result = find_best_match(track, ydl)
+
+    assert result is None
+    assert "no acceptable match" in caplog.text

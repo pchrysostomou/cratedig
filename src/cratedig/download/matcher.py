@@ -12,11 +12,14 @@ orchestrator translates ``None`` -> ``MatchNotFoundError`` in Phase 5).
 
 from __future__ import annotations
 
+import logging
 import re
 
 from rapidfuzz import fuzz
 
 from cratedig.models import Track
+
+logger = logging.getLogger(__name__)
 
 # -- tunable knobs (see DESIGN.md open question #3) -------------------------
 
@@ -78,11 +81,25 @@ def _score(track: Track, entry: dict) -> float | None:
     Disqualifiers (hard, like a gate): missing/out-of-tolerance duration, or an
     unrequested live/cover/remix/... variant the Spotify title does not share.
     """
+    title = entry.get("title")
+    channel = _channel_of(entry)
+    target = track.duration_ms / 1000  # seconds
+
     duration = entry.get("duration")
     if not isinstance(duration, (int, float)):  # missing or non-numeric -> disqualify
+        logger.info("candidate %r [%s]: no duration -> reject:no-duration", title, channel)
         return None
-    delta = abs(duration - track.duration_ms / 1000)
+    delta = abs(duration - target)
     if delta > DURATION_TOLERANCE_S:
+        logger.info(
+            "candidate %r [%s]: dur=%.0fs target=%.0fs delta=%.0fs > %.0fs -> reject:duration",
+            title,
+            channel,
+            duration,
+            target,
+            delta,
+            DURATION_TOLERANCE_S,
+        )
         return None
 
     raw_title = entry.get("title")
@@ -94,6 +111,14 @@ def _score(track: Track, entry: dict) -> float | None:
     for word in VARIANT_WORDS:
         phrase = f" {word} "
         if phrase in entry_variants and phrase not in track_variants:
+            logger.info(
+                "candidate %r [%s]: dur=%.0fs delta=%.0fs variant %r -> reject:variant",
+                title,
+                channel,
+                duration,
+                delta,
+                word,
+            )
             return None
 
     score = WEIGHT_DURATION * (1 - delta / DURATION_TOLERANCE_S)
@@ -102,7 +127,6 @@ def _score(track: Track, entry: dict) -> float | None:
     norm_entry_title = _normalize(entry_title)
     score += WEIGHT_TITLE * (fuzz.token_set_ratio(norm_track_title, norm_entry_title) / 100)
 
-    channel = _channel_of(entry)
     haystack = f" {norm_entry_title} {_normalize(channel)} "
     norm_artists = [a for a in (_normalize(x) for x in track.artists) if a]
     if norm_artists:
@@ -115,23 +139,51 @@ def _score(track: Track, entry: dict) -> float | None:
     elif "official" in channel_lower:
         score += OFFICIAL_CHANNEL_BONUS
 
+    logger.info(
+        "candidate %r [%s]: dur=%.0fs delta=%.0fs -> score %.1f",
+        title,
+        channel,
+        duration,
+        delta,
+        score,
+    )
     return score
 
 
 def find_best_match(track: Track, ydl) -> str | None:
     """Search YouTube via ``ydl`` and return the best watch URL, or ``None``."""
-    result = ydl.extract_info(f"ytsearch{SEARCH_RESULTS}:{track.search_query}", download=False)
+    query = track.search_query
+    target = track.duration_ms / 1000  # seconds
+    search = f"ytsearch{SEARCH_RESULTS}:{query}"
+    logger.info("YouTube search: %s (target duration %.0fs)", search, target)
+
+    result = ydl.extract_info(search, download=False)
     entries = (result or {}).get("entries") or []
+    logger.info("ytsearch returned %d candidate(s) for %r", len(entries), query)
 
     best_url: str | None = None
     best_score = float("-inf")
     for entry in entries:
         if not entry or not entry.get("id"):
+            logger.info("candidate skipped: missing video id")
             continue
-        score = _score(track, entry)
-        if score is None or score < MIN_SCORE:
+        score = _score(track, entry)  # logs the gate reason for rejected candidates
+        if score is None:
+            continue
+        if score < MIN_SCORE:
+            logger.info(
+                "candidate %r: score %.1f < %.0f -> reject:below-threshold",
+                entry.get("title"),
+                score,
+                MIN_SCORE,
+            )
             continue
         if score > best_score:
             best_score = score
             best_url = f"https://www.youtube.com/watch?v={entry['id']}"
+
+    if best_url is not None:
+        logger.info("match %s (score %.1f) for %r", best_url, best_score, query)
+    else:
+        logger.info("no acceptable match for %r among %d candidate(s)", query, len(entries))
     return best_url
