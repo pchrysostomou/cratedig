@@ -33,7 +33,29 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "pytest", "_pytest"],
+    # Trim the bundle. pydantic_settings has an optional AWS-secrets config source
+    # (pydantic_settings.sources.providers.aws) that imports boto3 -> botocore -> s3transfer ->
+    # dateutil; cratedig never uses it, so exclude the whole AWS SDK (~25 MB). cryptography +
+    # secretstorage are pulled by yt-dlp's hook only for the LINUX (D-Bus keyring) cookie path,
+    # which is unused on Windows, so they are dead weight here (~19 MB incl. OpenSSL). Windows
+    # Chrome/Edge cookie decryption would use pycryptodome (not cryptography), and Firefox cookies
+    # need none, so excluding these does not affect Windows cookie support. setuptools/pkg_resources
+    # are build-time only. yt_dlp/certifi collection and urllib3/certifi/_ssl/OpenSSL are
+    # deliberately NOT excluded (needed for the extractors and HTTPS).
+    excludes=[
+        "tkinter",
+        "pytest",
+        "_pytest",
+        "boto3",
+        "botocore",
+        "s3transfer",
+        "awscrt",
+        "dateutil",
+        "cryptography",
+        "secretstorage",
+        "setuptools",
+        "pkg_resources",
+    ],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
