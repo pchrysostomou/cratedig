@@ -84,23 +84,38 @@ def _score(track: Track, entry: dict) -> float | None:
     title = entry.get("title")
     channel = _channel_of(entry)
     target = track.duration_ms / 1000  # seconds
-
     duration = entry.get("duration")
-    if not isinstance(duration, (int, float)):  # missing or non-numeric -> disqualify
-        logger.info("candidate %r [%s]: no duration -> reject:no-duration", title, channel)
-        return None
-    delta = abs(duration - target)
-    if delta > DURATION_TOLERANCE_S:
-        logger.info(
-            "candidate %r [%s]: dur=%.0fs target=%.0fs delta=%.0fs > %.0fs -> reject:duration",
-            title,
-            channel,
-            duration,
-            target,
-            delta,
-            DURATION_TOLERANCE_S,
+
+    if target > 0:
+        # Reference duration known: the duration gate is active.
+        if not isinstance(duration, (int, float)):  # missing or non-numeric -> disqualify
+            logger.info("candidate %r [%s]: no duration -> reject:no-duration", title, channel)
+            return None
+        delta = abs(duration - target)
+        if delta > DURATION_TOLERANCE_S:
+            logger.info(
+                "candidate %r [%s]: dur=%.0fs target=%.0fs delta=%.0fs > %.0fs -> reject:duration",
+                title,
+                channel,
+                duration,
+                target,
+                delta,
+                DURATION_TOLERANCE_S,
+            )
+            return None
+        duration_component = WEIGHT_DURATION * (1 - delta / DURATION_TOLERANCE_S)
+        dur_log = f"dur={duration:.0f}s delta={delta:.0f}s"
+    else:
+        # No reference duration (MusicBrainz returned no length): skip the gate entirely — never
+        # reject on duration without a reference — and let title/artist/channel decide. Duration
+        # contributes nothing (neutral) so a good non-duration match can still win.
+        logger.info("candidate %r [%s]: duration gate skipped (unknown target)", title, channel)
+        duration_component = 0.0
+        dur_log = (
+            f"dur={duration:.0f}s (target unknown)"
+            if isinstance(duration, (int, float))
+            else "dur=? (target unknown)"
         )
-        return None
 
     raw_title = entry.get("title")
     entry_title = raw_title if isinstance(raw_title, str) else ""
@@ -112,16 +127,15 @@ def _score(track: Track, entry: dict) -> float | None:
         phrase = f" {word} "
         if phrase in entry_variants and phrase not in track_variants:
             logger.info(
-                "candidate %r [%s]: dur=%.0fs delta=%.0fs variant %r -> reject:variant",
+                "candidate %r [%s]: %s variant %r -> reject:variant",
                 title,
                 channel,
-                duration,
-                delta,
+                dur_log,
                 word,
             )
             return None
 
-    score = WEIGHT_DURATION * (1 - delta / DURATION_TOLERANCE_S)
+    score = duration_component
 
     norm_track_title = _normalize(track.title)
     norm_entry_title = _normalize(entry_title)
@@ -140,11 +154,10 @@ def _score(track: Track, entry: dict) -> float | None:
         score += OFFICIAL_CHANNEL_BONUS
 
     logger.info(
-        "candidate %r [%s]: dur=%.0fs delta=%.0fs -> score %.1f",
+        "candidate %r [%s]: %s -> score %.1f",
         title,
         channel,
-        duration,
-        delta,
+        dur_log,
         score,
     )
     return score
